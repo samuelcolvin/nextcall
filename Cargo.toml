@@ -1,0 +1,17 @@
+[package]
+name = "nextcall"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ical = "0.11.0"
+reqwest = { version = "0.12.23", features = ["blocking"] }
+chrono = "0.4"
+cocoa = "0.26.1"
+objc = "0.2.7"
+tray-icon = "0.14.3"
+winit = "0.29.15"
+image = "0.25.0"
+imageproc = "0.25.0"
+ab_glyph = "0.2"
+open = "5.0"
