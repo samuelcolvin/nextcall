@@ -1,5 +1,7 @@
 mod icon;
 mod dialog;
+mod notifications;
+mod camera;
 
 use std::time::Duration;
 use tray_icon::{
