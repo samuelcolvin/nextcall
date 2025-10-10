@@ -1,4 +1,5 @@
 mod icon;
+mod dialog;
 
 use std::time::Duration;
 use tray_icon::{
@@ -15,11 +16,8 @@ fn main() {
 
     // Create menu
     let menu = Menu::new();
-    let hello_item = MenuItem::new("Hello World", true, None);
-    menu.append(&hello_item).unwrap();
-
-    let open_link_item = MenuItem::new("Open example.com", true, None);
-    menu.append(&open_link_item).unwrap();
+    let enter_url_item = MenuItem::new("Enter ICS URL", true, None);
+    menu.append(&enter_url_item).unwrap();
 
     let quit_item = MenuItem::new("Quit", true, None);
     menu.append(&quit_item).unwrap();
@@ -27,8 +25,8 @@ fn main() {
     // Create tray icon
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("Hello World App")
-        .with_icon(icon)
+        .with_tooltip("NextCall - ICS Calendar")
+        .with_icon(icon.clone())
         .build()
         .unwrap();
 
@@ -39,7 +37,7 @@ fn main() {
 
     // Track last update time and icon state
     let mut last_update = std::time::Instant::now();
-    let mut icon_state = 0; // Cycle through different icon states
+    let mut icon_state = 0;
 
     // Run event loop
     event_loop
@@ -51,12 +49,14 @@ fn main() {
 
             // Check for menu events
             if let Ok(event) = menu_channel.try_recv() {
-                if event.id == hello_item.id() {
-                    println!("Hello World menu item clicked!");
-                } else if event.id == open_link_item.id() {
-                    println!("Opening example.com...");
-                    if let Err(e) = open::that("https://example.com") {
-                        eprintln!("Failed to open URL: {}", e);
+                if event.id == enter_url_item.id() {
+                    println!("Opening URL input dialog...");
+                    // Show native macOS dialog
+                    if let Some(url) = dialog::show_url_input_dialog() {
+                        println!("ICS URL submitted: {}", url);
+                        // TODO: Process the ICS URL here
+                    } else {
+                        println!("Dialog cancelled");
                     }
                 } else if event.id == quit_item.id() {
                     println!("Quitting application...");
@@ -76,14 +76,14 @@ fn main() {
                 tray_icon.set_icon(Some(new_icon)).ok();
 
                 let display_text = match icon_state {
-                    0 => "infinity (∞)",
-                    1 => "60",
+                    0 => "60",
+                    1 => "5",
                     2 => "0",
                     3 => "-2!",
                     _ => "infinity",
                 };
 
-                icon_state = (icon_state + 1) % 4;
+                icon_state = (icon_state + 1) % 5;
                 last_update = std::time::Instant::now();
                 println!("Updated icon to: {}", display_text);
             }
