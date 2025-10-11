@@ -1973,6 +1973,7 @@ name = "nextcall"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "anyhow",
  "block2 0.5.1",
  "chrono",
  "core-foundation",

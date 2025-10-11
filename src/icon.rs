@@ -36,5 +36,5 @@ pub fn create_icon_with_text(text: &str, large: bool) -> tray_icon::Icon {
 }
 
 pub fn create_icon_infinity() -> tray_icon::Icon {
-    create_icon_with_text("∞", true)
+    create_icon_with_text("…", false)
 }

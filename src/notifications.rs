@@ -172,7 +172,7 @@ pub fn startup() -> Result<(), String> {
     Ok(())
 }
 
-pub fn send(title: &str, subtitle: Option<&str>, body: &str, url: &str) -> Result<(), String> {
+pub fn send(title: &str, subtitle: Option<&str>, body: &str, url: Option<&str>) {
     // Get the notification center
     let center: *mut AnyObject =
         unsafe { msg_send![class!(UNUserNotificationCenter), currentNotificationCenter] };
@@ -201,16 +201,19 @@ pub fn send(title: &str, subtitle: Option<&str>, body: &str, url: &str) -> Resul
         // Set interruption level to active to ensure it makes sound
         let _: () = msg_send![content, setInterruptionLevel: 1u64]; // UNNotificationInterruptionLevelActive
 
-        // Set the category to show the Join button
-        let category_id = NSString::from_str("MEETING_CATEGORY");
-        let _: () = msg_send![content, setCategoryIdentifier: &*category_id];
+        // Only set category and URL if url is provided
+        if let Some(url_str) = url {
+            // Set the category to show the Join button
+            let category_id = NSString::from_str("MEETING_CATEGORY");
+            let _: () = msg_send![content, setCategoryIdentifier: &*category_id];
 
-        // Store the URL in userInfo dictionary
-        let user_info_dict: *mut AnyObject = msg_send![class!(NSMutableDictionary), dictionary];
-        let url_key = NSString::from_str("url");
-        let url_value = NSString::from_str(url);
-        let _: () = msg_send![user_info_dict, setObject: &*url_value forKey: &*url_key];
-        let _: () = msg_send![content, setUserInfo: user_info_dict];
+            // Store the URL in userInfo dictionary
+            let user_info_dict: *mut AnyObject = msg_send![class!(NSMutableDictionary), dictionary];
+            let url_key = NSString::from_str("url");
+            let url_value = NSString::from_str(url_str);
+            let _: () = msg_send![user_info_dict, setObject: &*url_value forKey: &*url_key];
+            let _: () = msg_send![content, setUserInfo: user_info_dict];
+        }
     }
 
     // Create notification request with a unique identifier
@@ -246,6 +249,4 @@ pub fn send(title: &str, subtitle: Option<&str>, body: &str, url: &str) -> Resul
             withCompletionHandler: &*completion_block
         );
     }
-
-    Ok(())
 }

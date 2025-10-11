@@ -25,7 +25,7 @@ fn show_dialog_internal(mtm: MainThreadMarker) -> Option<String> {
         ));
 
         // Add buttons using msg_send
-        let continue_btn = NSString::from_str("Continue");
+        let continue_btn = NSString::from_str("Update");
         let _: Retained<AnyObject> = msg_send_id![&alert, addButtonWithTitle: &*continue_btn];
 
         let cancel_btn = NSString::from_str("Cancel");
