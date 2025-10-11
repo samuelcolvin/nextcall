@@ -1,7 +1,7 @@
-mod icon;
-mod dialog;
-mod notifications;
 mod camera;
+mod dialog;
+mod icon;
+mod notifications;
 
 use std::time::Duration;
 use tray_icon::{
@@ -13,6 +13,7 @@ use winit::event_loop::{ControlFlow, EventLoopBuilder};
 fn main() {
     // Create event loop
     let event_loop = EventLoopBuilder::new().build().unwrap();
+    notifications::startup().unwrap();
 
     let icon = icon::create_icon_infinity();
 
@@ -66,8 +67,7 @@ fn main() {
                 }
             }
 
-            // Update icon every 5 seconds, cycling through different states
-            if last_update.elapsed() >= Duration::from_secs(5) {
+            if last_update.elapsed() >= Duration::from_secs(30) {
                 let new_icon = match icon_state {
                     0 => icon::create_icon_with_text("60", false),
                     1 => icon::create_icon_with_text("5", false),
@@ -88,6 +88,19 @@ fn main() {
                 icon_state = (icon_state + 1) % 5;
                 last_update = std::time::Instant::now();
                 println!("Updated icon to: {}", display_text);
+                notifications::send(
+                    "Next Call",
+                    None,
+                    "Call starting soon",
+                    "https://example.com",
+                )
+                .unwrap();
+
+                if camera::camera_active() {
+                    println!("Camera is active");
+                } else {
+                    println!("Camera is not active");
+                }
             }
         })
         .unwrap();
