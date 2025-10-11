@@ -3,13 +3,13 @@ mod config;
 mod dialog;
 mod ical;
 mod icon;
+mod logic;
 mod notifications;
 mod say;
 
-use anyhow::Result as AnyhowResult;
-use std::time::Instant;
-
+use std::sync::mpsc;
 use std::time::Duration;
+use std::time::Instant;
 use tray_icon::{
     TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuItem},
@@ -51,6 +51,9 @@ fn main() {
     // Track last update time and icon state
     let mut last_update: Option<Instant> = None;
 
+    // Channel for receiving icon updates from background thread
+    let (icon_tx, icon_rx) = mpsc::channel::<Option<tray_icon::Icon>>();
+
     // Run event loop
     event_loop
         .run(move |_event, event_loop_window_target| {
@@ -70,6 +73,14 @@ fn main() {
                     event_loop_window_target.exit();
                 }
             }
+
+            // Check for icon updates from background thread
+            if let Ok(opt_icon) = icon_rx.try_recv() {
+                if let Some(new_icon) = opt_icon {
+                    tray_icon.set_icon(Some(new_icon)).unwrap();
+                }
+            }
+
             let elapsed = match last_update {
                 Some(last_update) => last_update.elapsed(),
                 None => Duration::from_secs(3600),
@@ -77,41 +88,16 @@ fn main() {
             if elapsed >= Duration::from_secs(60) {
                 last_update = Some(Instant::now());
                 if let Some(ics_url) = opt_ics_url.as_deref() {
-                    if let Some(new_icon) = step(ics_url).unwrap() {
-                        tray_icon.set_icon(Some(new_icon)).unwrap();
-                    }
+                    // Spawn thread to run step() without blocking UI
+                    let ics_url = ics_url.to_string();
+                    let tx = icon_tx.clone();
+                    std::thread::spawn(move || {
+                        if let Ok(icon) = logic::step(&ics_url) {
+                            let _ = tx.send(icon);
+                        }
+                    });
                 }
             }
         })
         .unwrap();
-}
-
-fn step(ics_url: &str) -> AnyhowResult<Option<tray_icon::Icon>> {
-    let calendar = match ical::get_ics(&ics_url) {
-        Ok(calendar) => calendar,
-        Err(ical::CalendarError::HttpStatus(err)) => {
-            notifications::send("Next Call", Some("Invalid URL"), &err, None);
-            return Ok(None);
-        }
-        Err(ical::CalendarError::InvalidFormat(err)) => {
-            notifications::send("Next Call", Some("Invalid ical response"), &err, None);
-            return Ok(None);
-        }
-        Err(ical::CalendarError::NetworkError(err)) => {
-            eprintln!("Network error: {}", err);
-            return Ok(None);
-        }
-    };
-
-    let new_icon = icon::create_icon_with_text("60", false);
-
-    // say::say("Call with John Doe just started.").unwrap();
-    notifications::send("Next Call", None, &format!("calendar: {calendar:?}"), None);
-
-    if camera::camera_active() {
-        println!("Camera is active");
-    } else {
-        println!("Camera is not active");
-    }
-    Ok(Some(new_icon))
 }
