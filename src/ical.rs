@@ -5,6 +5,7 @@ use std::io::BufReader;
 
 #[derive(Debug)]
 pub struct Calendar {
+    #[allow(dead_code)]
     pub events: Vec<(DateTime<Utc>, IcalEvent)>,
 }
 

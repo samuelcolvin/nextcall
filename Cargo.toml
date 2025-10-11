@@ -8,10 +8,7 @@ ical = "0.11.0"
 reqwest = { version = "0.12.23", features = ["blocking"] }
 chrono = "0.4"
 objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSString", "NSThread", "NSArray", "NSDate", "NSObject", "NSError", "NSDictionary"] }
-objc2-app-kit = { version = "0.2", features = ["NSAlert", "NSWindow", "NSTextField", "NSButton", "NSPanel"] }
-core-foundation = "0.9"
-core-foundation-sys = "0.8"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSObject", "NSError", "NSDictionary"] }
 tray-icon = "0.14.3"
 winit = "0.29.15"
 image = "0.25.0"

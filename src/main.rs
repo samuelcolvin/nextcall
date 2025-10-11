@@ -61,7 +61,7 @@ fn main() {
             // Check for menu events
             if let Ok(event) = menu_channel.try_recv() {
                 if event.id == configure.id() {
-                    if let Some(url) = dialog::show_url_input_dialog() {
+                    if let Some(url) = dialog::show_url_input_dialog(opt_ics_url.as_deref()).unwrap() {
                         config::set_config(&url).unwrap();
                         opt_ics_url = Some(url);
                         last_update = None;
