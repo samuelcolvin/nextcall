@@ -1,32 +1,37 @@
 use chrono::{DateTime, Utc};
-use ical::parser::ical::component::IcalEvent;
 use ical::IcalParser;
+use ical::parser::ical::component::IcalEvent;
 use std::io::BufReader;
-use std::env;
 
-fn main() {
-    // Get URL from command line arguments
-    let args: Vec<String> = env::args().collect();
+#[derive(Debug)]
+pub struct Calendar {
+    pub events: Vec<(DateTime<Utc>, IcalEvent)>,
+}
 
-    if args.len() != 2 {
-        eprintln!("Usage: {} <ical-url>", args[0]);
-        std::process::exit(1);
-    }
+#[derive(Debug)]
+pub enum CalendarError {
+    // for any status code > 400, should be `{status}: {text}`
+    HttpStatus(String),
+    // invalid ics file,
+    InvalidFormat(String),
+    // Other network errors
+    NetworkError(String),
+}
 
-    let url = &args[1];
-
-    println!("Downloading iCal file from: {}", url);
-
+pub fn get_ics(url: &str) -> Result<Calendar, CalendarError> {
     // Download the iCal file
-    let response = reqwest::blocking::get(url)
-        .expect("Failed to download iCal file");
+    let response = reqwest::blocking::get(url).map_err(|e| CalendarError::NetworkError(e.to_string()))?;
 
-    if !response.status().is_success() {
-        eprintln!("Failed to download: HTTP {}", response.status());
-        return;
+    let status = response.status();
+    if !status.is_success() {
+        let status_text = response.text().unwrap_or_default();
+        return Err(CalendarError::HttpStatus(format!("{status}: {status_text}",)));
     }
 
-    let content = response.bytes().expect("Failed to read response");
+    let content = response
+        .bytes()
+        .map_err(|e| CalendarError::NetworkError(e.to_string()))?;
+
     let reader = BufReader::new(content.as_ref());
 
     // Parse the iCal file
@@ -43,7 +48,7 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("Error parsing calendar: {:?}", e);
+                return Err(CalendarError::InvalidFormat(e.to_string()));
             }
         }
     }
@@ -51,38 +56,7 @@ fn main() {
     // Sort events by start time
     events.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Filter for upcoming events and take the next 5
-    let now = Utc::now();
-    let upcoming: Vec<_> = events
-        .into_iter()
-        .filter(|(dt, _)| dt > &now)
-        .take(5)
-        .collect();
-
-    println!("\n=== Next 5 Upcoming Appointments ===\n");
-
-    if upcoming.is_empty() {
-        println!("No upcoming appointments found.");
-    } else {
-        for (i, (start_time, event)) in upcoming.iter().enumerate() {
-            println!("--- Appointment {} ---", i + 1);
-            println!("Start: {}", start_time);
-
-            if let Some(summary) = get_property(&event, "SUMMARY") {
-                println!("Summary: {}", summary);
-            }
-
-            if let Some(description) = get_property(&event, "DESCRIPTION") {
-                println!("Description: {}", description);
-            }
-
-            if let Some(location) = get_property(&event, "LOCATION") {
-                println!("Location: {}", location);
-            }
-
-            println!("\nFull event details: {:#?}\n", event);
-        }
-    }
+    Ok(Calendar { events })
 }
 
 fn extract_datetime(event: &IcalEvent) -> Option<DateTime<Utc>> {
@@ -113,8 +87,10 @@ fn extract_datetime(event: &IcalEvent) -> Option<DateTime<Utc>> {
     None
 }
 
+#[allow(dead_code)]
 fn get_property(event: &IcalEvent, name: &str) -> Option<String> {
-    event.properties
+    event
+        .properties
         .iter()
         .find(|p| p.name == name)
         .and_then(|p| p.value.clone())
