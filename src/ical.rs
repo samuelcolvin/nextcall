@@ -1,7 +1,9 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
+use chrono_tz::Tz;
 use ical::IcalParser;
 pub use ical::parser::ical::component::IcalEvent;
 use std::io::BufReader;
+use std::str::FromStr;
 
 #[derive(Debug)]
 pub struct Calendar {
@@ -61,30 +63,60 @@ pub fn get_ics(url: &str) -> Result<Calendar, CalendarError> {
 }
 
 fn extract_datetime(event: &IcalEvent) -> Option<DateTime<Utc>> {
-    for property in &event.properties {
-        if property.name == "DTSTART" {
-            if let Some(value) = &property.value {
-                // Try to parse the datetime
-                // iCal format: YYYYMMDDTHHMMSSZ or YYYYMMDD
-                let cleaned = value.replace("-", "").replace(":", "");
+    // First, find the DTSTART property
+    let dtstart_property = event.properties.iter().find(|p| p.name == "DTSTART")?;
+    let value = dtstart_property.value.as_ref()?;
 
-                // Handle different formats
-                if cleaned.contains('T') && cleaned.ends_with('Z') {
-                    // Format: 20231225T120000Z
-                    let dt_str = cleaned.trim_end_matches('Z');
-                    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y%m%dT%H%M%S") {
-                        return Some(DateTime::from_naive_utc_and_offset(dt, Utc));
-                    }
-                } else if cleaned.len() == 8 {
-                    // Format: 20231225 (date only)
-                    if let Ok(date) = chrono::NaiveDate::parse_from_str(&cleaned, "%Y%m%d") {
-                        let dt = date.and_hms_opt(0, 0, 0)?;
-                        return Some(DateTime::from_naive_utc_and_offset(dt, Utc));
+    // Check if there's a TZID parameter
+    let tzid = dtstart_property.params.as_ref().and_then(|params| {
+        params.iter().find_map(|(key, values)| {
+            if key == "TZID" && !values.is_empty() {
+                Some(values[0].as_str())
+            } else {
+                None
+            }
+        })
+    });
+
+    // Clean the datetime string
+    let cleaned = value.replace("-", "").replace(":", "");
+
+    // Handle timezone-aware datetime
+    if let Some(tz_name) = tzid {
+        // Parse timezone: YYYYMMDDTHHMMSS
+        if cleaned.contains('T') && cleaned.len() >= 15 {
+            let dt_str = &cleaned[..15]; // Take YYYYMMDDTHHMMSS
+            if let Ok(naive_dt) = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y%m%dT%H%M%S") {
+                // Parse the timezone
+                if let Ok(tz) = Tz::from_str(tz_name) {
+                    // Convert to UTC
+                    if let Some(local_dt) = tz.from_local_datetime(&naive_dt).earliest() {
+                        return Some(local_dt.with_timezone(&Utc));
                     }
                 }
             }
         }
+        return None;
     }
+
+    // Handle UTC datetime (ends with Z)
+    if cleaned.contains('T') && cleaned.ends_with('Z') {
+        // Format: 20231225T120000Z
+        let dt_str = cleaned.trim_end_matches('Z');
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y%m%dT%H%M%S") {
+            return Some(DateTime::from_naive_utc_and_offset(dt, Utc));
+        }
+    }
+
+    // Handle date only (no time)
+    if cleaned.len() == 8 {
+        // Format: 20231225 (date only)
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(&cleaned, "%Y%m%d") {
+            let dt = date.and_hms_opt(0, 0, 0)?;
+            return Some(DateTime::from_naive_utc_and_offset(dt, Utc));
+        }
+    }
+
     None
 }
 
@@ -101,7 +133,14 @@ pub fn get_event_summary(event: &IcalEvent) -> Option<String> {
 }
 
 pub fn get_video_link(event: &IcalEvent) -> Option<String> {
-    // Check for URL property first (Zoom, Teams, etc.)
+    // Check for X-GOOGLE-CONFERENCE property (Google Calendar)
+    if let Some(url) = get_property(event, "X-GOOGLE-CONFERENCE") {
+        if url.starts_with("http") {
+            return Some(url);
+        }
+    }
+
+    // Check for URL property (Zoom, Teams, etc.)
     if let Some(url) = get_property(event, "URL") {
         if url.starts_with("http") {
             return Some(url);
@@ -119,13 +158,15 @@ pub fn get_video_link(event: &IcalEvent) -> Option<String> {
     if let Some(description) = get_property(event, "DESCRIPTION") {
         // Look for common video conferencing URLs
         for line in description.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("http")
-                && (trimmed.contains("zoom.us")
-                    || trimmed.contains("meet.google.com")
-                    || trimmed.contains("teams.microsoft.com"))
-            {
-                return Some(trimmed.to_string());
+            // Check if line contains a video conferencing URL
+            if line.contains("zoom.us") || line.contains("meet.google.com") || line.contains("teams.microsoft.com") {
+                // Extract the URL from the line
+                if let Some(start) = line.find("http") {
+                    let url_part = &line[start..];
+                    // Find the end of the URL (space, newline, or end of string)
+                    let end = url_part.find(|c: char| c.is_whitespace()).unwrap_or(url_part.len());
+                    return Some(url_part[..end].to_string());
+                }
             }
         }
     }

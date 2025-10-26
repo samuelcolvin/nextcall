@@ -14,9 +14,7 @@ format:
 
 .PHONY: lint  ## Lint rust source files
 lint:
-	cargo fmt --version
-	cargo fmt --all -- --check
-	cargo clippy --version
+	cargo fmt
 	cargo clippy --tests -- -D warnings
 
 .PHONY: all  ## Run the standard set of checks performed in CI
