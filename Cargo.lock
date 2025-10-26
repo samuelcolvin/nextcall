@@ -2106,7 +2106,9 @@ dependencies = [
  "open",
  "reqwest",
  "rodio",
+ "serde",
  "serde_json",
+ "toml",
  "tray-icon",
  "winit",
 ]

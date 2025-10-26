@@ -19,3 +19,5 @@ block2 = "0.5"
 open = "5.0"
 anyhow = "1.0.100"
 rodio = "0.21.1"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"

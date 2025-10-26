@@ -1,49 +1,48 @@
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
 
-/// Returns the path to the config file (~/.config/nextcall/config.txt)
-fn get_config_path() -> Result<PathBuf> {
+#[derive(Debug, Deserialize, Clone)]
+pub struct Config {
+    pub eleven_labs_key: Option<String>,
+    pub ical_url: String,
+}
+
+/// Returns the path to the config file (nextcall.toml)
+/// Checks current working directory first, then home directory
+fn get_config_path() -> Result<Option<PathBuf>> {
+    // Check current working directory first
+    let cwd_config = PathBuf::from("nextcall.toml");
+    if cwd_config.exists() {
+        return Ok(Some(cwd_config));
+    }
+
+    // Check home directory
     let home = std::env::var("HOME")
         .context("Failed to get HOME environment variable")?;
 
-    let config_dir = PathBuf::from(home)
-        .join(".config")
-        .join("nextcall");
-
-    Ok(config_dir.join("config.txt"))
-}
-
-/// Saves the ICS URL to the config file
-pub fn set_config(ics_url: &str) -> Result<()> {
-    let config_path = get_config_path()?;
-
-    // Create parent directories if they don't exist
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)
-            .context("Failed to create config directory")?;
+    let home_config = PathBuf::from(home).join("nextcall.toml");
+    if home_config.exists() {
+        return Ok(Some(home_config));
     }
 
-    // Write the URL to the file
-    fs::write(&config_path, ics_url)
-        .context("Failed to write config file")?;
-
-    Ok(())
+    Ok(None)
 }
 
-/// Loads the ICS URL from the config file
+/// Loads the configuration from nextcall.toml
 /// Returns None if the config file doesn't exist
-pub fn get_config() -> Result<Option<String>> {
-    let config_path = get_config_path()?;
+pub fn get_config() -> Result<Option<Config>> {
+    let config_path = match get_config_path()? {
+        Some(path) => path,
+        None => return Ok(None),
+    };
 
-    // Return None if the config file doesn't exist
-    if !config_path.exists() {
-        return Ok(None);
-    }
-
-    let url = fs::read_to_string(&config_path)
+    let contents = fs::read_to_string(&config_path)
         .context("Failed to read config file")?;
 
-    // Trim whitespace from the URL
-    Ok(Some(url.trim().to_string()))
+    let config: Config = toml::from_str(&contents)
+        .context("Failed to parse config file")?;
+
+    Ok(Some(config))
 }

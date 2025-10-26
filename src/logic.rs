@@ -1,7 +1,7 @@
 use crate::{camera, ical, icon, notifications, say};
 use anyhow::Result as AnyhowResult;
 
-pub fn step(ics_url: &str) -> AnyhowResult<Option<tray_icon::Icon>> {
+pub fn step(ics_url: &str, eleven_labs_key: Option<&str>) -> AnyhowResult<Option<tray_icon::Icon>> {
     let calendar = match ical::get_ics(&ics_url) {
         Ok(calendar) => calendar,
         Err(ical::CalendarError::HttpStatus(err)) => {
@@ -20,7 +20,7 @@ pub fn step(ics_url: &str) -> AnyhowResult<Option<tray_icon::Icon>> {
 
     let new_icon = icon::create_icon_with_text("60", false);
 
-    say::say("Call with John Doe just started.", Some("key")).unwrap();
+    say::say("Call with John Doe just started.", eleven_labs_key).unwrap();
     notifications::send("Next Call", None, &format!("calendar: {calendar:?}"), None);
 
     if camera::camera_active() {

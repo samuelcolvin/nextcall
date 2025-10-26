@@ -1,12 +1,10 @@
 use anyhow::Result as AnyhowResult;
 use rodio::OutputStreamBuilder;
-use std::fs::File;
-use std::io::BufReader;
-use std::io::Write;
+use std::io::{BufReader, Cursor};
 use std::process::Command;
 
-pub fn say(text: &str, eleven_labs_api_key: Option<&str>) -> AnyhowResult<()> {
-    if let Some(api_key) = eleven_labs_api_key {
+pub fn say(text: &str, eleven_labs_key: Option<&str>) -> AnyhowResult<()> {
+    if let Some(api_key) = eleven_labs_key {
         say_eleven_labs(text, api_key)
     } else {
         say_builtin(text)
@@ -30,20 +28,21 @@ fn say_eleven_labs(text: &str, api_key: &str) -> AnyhowResult<()> {
         return Err(anyhow::anyhow!("Failed to generate audio: HTTP {}", response.status()));
     }
 
-    // Write the MP3 content to file
+    // Get the MP3 content as bytes
     let audio_bytes = response.bytes()?;
-    let mut file = File::create("file.mp3")?;
-    file.write_all(&audio_bytes)?;
 
     // Create output stream
     let mut stream_handle = OutputStreamBuilder::open_default_stream()?;
     stream_handle.log_on_drop(false);
-    // Load a sound from a file, using a path relative to Cargo.toml
-    let file = BufReader::new(File::open("file.mp3").unwrap());
-    // Note that the playback stops when the sink is dropped
+
+    // Use the audio bytes directly from memory via Cursor
+    let cursor = Cursor::new(audio_bytes);
+    let source = BufReader::new(cursor);
+
+    // Play the audio
     {
-        let sink = rodio::play(&stream_handle.mixer(), file).unwrap();
-        // wait for the sound to finish playing
+        let sink = rodio::play(&stream_handle.mixer(), source)?;
+        // Wait for the sound to finish playing
         sink.sleep_until_end();
     }
     Ok(())

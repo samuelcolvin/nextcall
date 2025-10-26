@@ -1,6 +1,5 @@
 mod camera;
 mod config;
-mod dialog;
 mod ical;
 mod icon;
 mod logic;
@@ -28,9 +27,6 @@ fn main() {
     let about = MenuItem::new("NextCall", true, None);
     menu.append(&about).unwrap();
 
-    let configure = MenuItem::new("Configure", true, None);
-    menu.append(&configure).unwrap();
-
     let quit_item = MenuItem::new("Quit", true, None);
     menu.append(&quit_item).unwrap();
 
@@ -43,9 +39,9 @@ fn main() {
 
     let menu_channel = MenuEvent::receiver();
 
-    let mut opt_ics_url = config::get_config().unwrap();
-    if opt_ics_url.is_none() {
-        notifications::send("NextCall Configuration", None, "WARNING: ICS URL not configured", None);
+    let opt_config = config::get_config().unwrap();
+    if opt_config.is_none() {
+        notifications::send("NextCall Configuration", None, "WARNING: nextcall.toml not found", None);
     }
 
     // Track last update time and icon state
@@ -63,13 +59,7 @@ fn main() {
 
             // Check for menu events
             if let Ok(event) = menu_channel.try_recv() {
-                if event.id == configure.id() {
-                    if let Some(url) = dialog::show_url_input_dialog(opt_ics_url.as_deref()).unwrap() {
-                        config::set_config(&url).unwrap();
-                        opt_ics_url = Some(url);
-                        last_update = None;
-                    }
-                } else if event.id == quit_item.id() {
+                if event.id == quit_item.id() {
                     event_loop_window_target.exit();
                 }
             }
@@ -87,12 +77,13 @@ fn main() {
             };
             if elapsed >= Duration::from_secs(60) {
                 last_update = Some(Instant::now());
-                if let Some(ics_url) = opt_ics_url.as_deref() {
+                if let Some(config) = opt_config.as_ref() {
                     // Spawn thread to run step() without blocking UI
-                    let ics_url = ics_url.to_string();
+                    let ics_url = config.ical_url.clone();
+                    let eleven_labs_key = config.eleven_labs_key.clone();
                     let tx = icon_tx.clone();
                     std::thread::spawn(move || {
-                        if let Ok(icon) = logic::step(&ics_url) {
+                        if let Ok(icon) = logic::step(&ics_url, eleven_labs_key.as_deref()) {
                             let _ = tx.send(icon);
                         }
                     });
