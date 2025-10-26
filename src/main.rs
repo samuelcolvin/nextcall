@@ -39,10 +39,15 @@ fn main() {
 
     let menu_channel = MenuEvent::receiver();
 
-    let opt_config = config::get_config().unwrap();
-    if opt_config.is_none() {
-        notifications::send("NextCall Configuration", None, "WARNING: nextcall.toml not found", None);
-    }
+    let Some(config) = config::get_config().unwrap() else {
+        notifications::send(
+            "NextCall Configuration",
+            Some("WARNING: nextcall.toml not found"),
+            "Create ~/nextcall.toml to configure Nextcall",
+            None,
+        );
+        std::process::exit(1);
+    };
 
     // Track last update time and active event
     let mut last_update: Option<Instant> = None;
@@ -92,32 +97,30 @@ fn main() {
             // Update based on dynamic check interval
             if elapsed >= check_interval {
                 last_update = Some(Instant::now());
-                if let Some(config) = opt_config.as_ref() {
-                    // Spawn thread to run step() without blocking UI
-                    let ics_url = config.ical_url.clone();
-                    let eleven_labs_key = config.eleven_labs_key.clone();
-                    let icon_tx_clone = icon_tx.clone();
-                    let event_tx_clone = event_tx.clone();
-                    let duration_tx_clone = duration_tx.clone();
-                    let mut current_active = active_event.clone();
+                // Spawn thread to run step() without blocking UI
+                let ics_url = config.ical_url.clone();
+                let eleven_labs_key = config.eleven_labs_key.clone();
+                let icon_tx_clone = icon_tx.clone();
+                let event_tx_clone = event_tx.clone();
+                let duration_tx_clone = duration_tx.clone();
+                let mut current_active = active_event.clone();
 
-                    std::thread::spawn(move || {
-                        if let Ok(result) = logic::step(&ics_url, eleven_labs_key.as_deref(), current_active.as_mut()) {
-                            if let Some(icon) = result.new_icon {
-                                let _ = icon_tx_clone.send(Some(icon));
-                            }
-                            // Send back the updated active event (or the new one if there is one)
-                            if let Some(new_active) = result.new_active_event {
-                                let _ = event_tx_clone.send(Some(new_active));
-                            } else if let Some(active) = current_active {
-                                // Send back the potentially updated current active event
-                                let _ = event_tx_clone.send(Some(active));
-                            }
-                            // Send back the next check duration
-                            let _ = duration_tx_clone.send(result.next_check_duration);
+                std::thread::spawn(move || {
+                    if let Ok(result) = logic::step(&ics_url, eleven_labs_key.as_deref(), current_active.as_mut()) {
+                        if let Some(icon) = result.new_icon {
+                            let _ = icon_tx_clone.send(Some(icon));
                         }
-                    });
-                }
+                        // Send back the updated active event (or the new one if there is one)
+                        if let Some(new_active) = result.new_active_event {
+                            let _ = event_tx_clone.send(Some(new_active));
+                        } else if let Some(active) = current_active {
+                            // Send back the potentially updated current active event
+                            let _ = event_tx_clone.send(Some(active));
+                        }
+                        // Send back the next check duration
+                        let _ = duration_tx_clone.send(result.next_check_duration);
+                    }
+                });
             }
         })
         .unwrap();
