@@ -19,8 +19,7 @@ fn get_config_path() -> Result<Option<PathBuf>> {
     }
 
     // Check home directory
-    let home = std::env::var("HOME")
-        .context("Failed to get HOME environment variable")?;
+    let home = std::env::var("HOME").context("Failed to get HOME environment variable")?;
 
     let home_config = PathBuf::from(home).join("nextcall.toml");
     if home_config.exists() {
@@ -38,11 +37,9 @@ pub fn get_config() -> Result<Option<Config>> {
         None => return Ok(None),
     };
 
-    let contents = fs::read_to_string(&config_path)
-        .context("Failed to read config file")?;
+    let contents = fs::read_to_string(&config_path).context("Failed to read config file")?;
 
-    let config: Config = toml::from_str(&contents)
-        .context("Failed to parse config file")?;
+    let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
 
     Ok(Some(config))
 }

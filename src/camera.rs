@@ -14,8 +14,8 @@ struct CMIOObjectPropertyAddress {
     element: u32,
 }
 
-#[link(name = "AVFoundation", kind = "framework")]
-#[link(name = "CoreMediaIO", kind = "framework")]
+#[link(name = "AVFoundation")]
+#[link(name = "CoreMediaIO")]
 unsafe extern "C" {
     fn CMIOObjectGetPropertyData(
         object_id: u32,
@@ -31,8 +31,7 @@ unsafe extern "C" {
 pub fn camera_active() -> bool {
     unsafe {
         // Get AVCaptureDevice class
-        let av_capture_device_class =
-            AnyClass::get("AVCaptureDevice").expect("AVCaptureDevice class not found");
+        let av_capture_device_class = AnyClass::get("AVCaptureDevice").expect("AVCaptureDevice class not found");
 
         // Create AVMediaTypeVideo NSString - the actual constant value is "vide"
         let av_media_type_video = NSString::from_str("vide");

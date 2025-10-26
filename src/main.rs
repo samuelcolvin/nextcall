@@ -65,10 +65,8 @@ fn main() {
             }
 
             // Check for icon updates from background thread
-            if let Ok(opt_icon) = icon_rx.try_recv() {
-                if let Some(new_icon) = opt_icon {
-                    tray_icon.set_icon(Some(new_icon)).unwrap();
-                }
+            if let Ok(Some(new_icon)) = icon_rx.try_recv() {
+                tray_icon.set_icon(Some(new_icon)).unwrap();
             }
 
             let elapsed = match last_update {

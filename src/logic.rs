@@ -2,7 +2,7 @@ use crate::{camera, ical, icon, notifications, say};
 use anyhow::Result as AnyhowResult;
 
 pub fn step(ics_url: &str, eleven_labs_key: Option<&str>) -> AnyhowResult<Option<tray_icon::Icon>> {
-    let calendar = match ical::get_ics(&ics_url) {
+    let calendar = match ical::get_ics(ics_url) {
         Ok(calendar) => calendar,
         Err(ical::CalendarError::HttpStatus(err)) => {
             notifications::send("Next Call", Some("Invalid URL"), &err, None);

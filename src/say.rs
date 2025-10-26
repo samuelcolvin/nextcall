@@ -41,7 +41,7 @@ fn say_eleven_labs(text: &str, api_key: &str) -> AnyhowResult<()> {
 
     // Play the audio
     {
-        let sink = rodio::play(&stream_handle.mixer(), source)?;
+        let sink = rodio::play(stream_handle.mixer(), source)?;
         // Wait for the sound to finish playing
         sink.sleep_until_end();
     }
