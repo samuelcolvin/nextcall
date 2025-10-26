@@ -1,7 +1,10 @@
-use crate::ical::IcalEvent;
 use crate::{camera, ical, icon, notifications, say};
 use anyhow::Result as AnyhowResult;
 use chrono::{DateTime, Utc};
+use std::time::Duration;
+
+// Default check interval: 3 minutes
+const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone)]
 pub struct ActiveEvent {
@@ -35,20 +38,22 @@ impl ActiveEvent {
 pub struct StepResult {
     pub new_icon: Option<tray_icon::Icon>,
     pub new_active_event: Option<ActiveEvent>,
+    pub next_check_duration: Duration,
 }
 
 pub fn step(
     ics_url: &str,
     eleven_labs_key: Option<&str>,
-    current_active_event: Option<&mut ActiveEvent>,
+    mut current_active_event: Option<&mut ActiveEvent>,
 ) -> AnyhowResult<StepResult> {
-    let calendar = match ical::get_ics(ics_url) {
-        Ok(calendar) => calendar,
+    let next_event = match ical::get_next_event(ics_url) {
+        Ok(event) => event,
         Err(ical::CalendarError::HttpStatus(err)) => {
             notifications::send("Next Call", Some("Invalid URL"), &err, None);
             return Ok(StepResult {
                 new_icon: None,
                 new_active_event: None,
+                next_check_duration: DEFAULT_CHECK_INTERVAL,
             });
         }
         Err(ical::CalendarError::InvalidFormat(err)) => {
@@ -56,6 +61,7 @@ pub fn step(
             return Ok(StepResult {
                 new_icon: None,
                 new_active_event: None,
+                next_check_duration: DEFAULT_CHECK_INTERVAL,
             });
         }
         Err(ical::CalendarError::NetworkError(err)) => {
@@ -63,47 +69,29 @@ pub fn step(
             return Ok(StepResult {
                 new_icon: None,
                 new_active_event: None,
+                next_check_duration: DEFAULT_CHECK_INTERVAL,
+            });
+        }
+        Err(ical::CalendarError::NoUpcomingEvents) => {
+            println!("No upcoming calls with video links");
+            return Ok(StepResult {
+                new_icon: Some(icon::create_icon_with_text("...", false)),
+                new_active_event: None,
+                next_check_duration: DEFAULT_CHECK_INTERVAL,
             });
         }
     };
 
     let now = Utc::now();
-
-    // Filter events that have video links and are in the future or recently started
-    let mut relevant_events: Vec<&(DateTime<Utc>, IcalEvent)> = calendar
-        .events
-        .iter()
-        .filter(|(start_time, event)| {
-            let has_video = ical::get_video_link(event).is_some();
-            let minutes_diff = start_time.signed_duration_since(now).num_minutes();
-            has_video && minutes_diff >= -10 // Include events that started up to 10 minutes ago
-        })
-        .collect();
-
-    if relevant_events.is_empty() {
-        println!("No upcoming calls with video links");
-        return Ok(StepResult {
-            new_icon: Some(icon::create_icon_with_text("...", false)),
-            new_active_event: None,
-        });
-    }
-
-    // Sort by start time to ensure we get the chronologically next event
-    relevant_events.sort_by_key(|(start_time, _)| *start_time);
-
-    // Get the next event
-    let (next_start, next_event) = relevant_events[0];
-    let time_until_start = next_start.signed_duration_since(now);
+    let time_until_start = next_event.start_time.signed_duration_since(now);
     let minutes_until = time_until_start.num_minutes();
-
-    let event_summary = ical::get_event_summary(next_event).unwrap_or_else(|| "Unknown".to_string());
 
     // Print status for events in the future
     if minutes_until > 0 {
         println!(
-            "Next call \"{}\" starts at {} in {}, waiting 10 seconds",
-            event_summary,
-            next_start.format("%Y-%m-%d %H:%M:%S %Z"),
+            "Next call \"{}\" starts at {} in {}",
+            next_event.summary,
+            next_event.start_time.format("%Y-%m-%d %H:%M:%S %Z"),
             display_interval(time_until_start.num_seconds())
         );
     }
@@ -121,11 +109,9 @@ pub fn step(
 
     // Check if this is a new event that just started
     if (-10..=0).contains(&minutes_until) {
-        let video_link = ical::get_video_link(next_event);
-
         // Check if we need to create a new active event or if it's the same one
         let is_new_event = match current_active_event.as_ref() {
-            Some(active) => active.summary != event_summary || active.start_time != *next_start,
+            Some(active) => active.summary != next_event.summary || active.start_time != next_event.start_time,
             None => true,
         };
 
@@ -133,26 +119,39 @@ pub fn step(
             // New event started
             println!(
                 "Starting event sequence for event \"{}\" starting at {}...",
-                event_summary,
-                next_start.format("%Y-%m-%d %H:%M:%S %Z")
+                next_event.summary,
+                next_event.start_time.format("%Y-%m-%d %H:%M:%S %Z")
             );
-            let mut new_active = ActiveEvent::new(event_summary, *next_start, video_link);
+            let mut new_active =
+                ActiveEvent::new(next_event.summary, next_event.start_time, Some(next_event.video_link));
             send_event_alert(&new_active, eleven_labs_key);
             new_active.notified_at_start = true;
+
+            let next_check =
+                calculate_next_check_duration(minutes_until, time_until_start.num_seconds(), Some(&new_active));
 
             return Ok(StepResult {
                 new_icon: Some(new_icon),
                 new_active_event: Some(new_active),
+                next_check_duration: next_check,
             });
-        } else if let Some(active) = current_active_event {
+        } else if let Some(ref mut active) = current_active_event {
             // Same event, check if we need to send reminders
             check_and_send_reminders(active, eleven_labs_key);
         }
     }
 
+    // Calculate next check duration based on current state
+    let next_check = calculate_next_check_duration(
+        minutes_until,
+        time_until_start.num_seconds(),
+        current_active_event.as_deref(),
+    );
+
     Ok(StepResult {
         new_icon: Some(new_icon),
         new_active_event: None,
+        next_check_duration: next_check,
     })
 }
 
@@ -215,6 +214,51 @@ fn int_as_word(n: usize) -> String {
         words[n].to_string()
     } else {
         n.to_string()
+    }
+}
+
+fn calculate_next_check_duration(
+    minutes_until_event: i64,
+    seconds_until_event: i64,
+    active_event: Option<&ActiveEvent>,
+) -> Duration {
+    // If event is in the future
+    if minutes_until_event > 0 {
+        if minutes_until_event > 60 {
+            // Event is more than 60 minutes away, use default interval (3 minutes)
+            DEFAULT_CHECK_INTERVAL
+        } else if minutes_until_event < 3 {
+            // Event starts within 3 minutes, schedule check exactly at event start
+            // Use exact seconds, but ensure at least 1 second
+            Duration::from_secs(seconds_until_event.max(1) as u64)
+        } else {
+            // Event is between 3 and 60 minutes away, check every minute to update countdown
+            // Calculate seconds until the next minute boundary
+            let seconds_in_current_minute = seconds_until_event % 60;
+            let seconds_until_next_minute = if seconds_in_current_minute == 0 {
+                60
+            } else {
+                seconds_in_current_minute
+            };
+            Duration::from_secs(seconds_until_next_minute as u64)
+        }
+    } else if let Some(active) = active_event {
+        // Event has started, calculate when next reminder is due
+        let minutes_since = active.minutes_since_start();
+
+        if !active.notified_at_2min && minutes_since < 2 {
+            // Next reminder at 2 minutes
+            Duration::from_secs((2 - minutes_since) as u64 * 60)
+        } else if !active.notified_at_5min && minutes_since < 5 {
+            // Next reminder at 5 minutes
+            Duration::from_secs((5 - minutes_since) as u64 * 60)
+        } else {
+            // All reminders sent, use default interval
+            DEFAULT_CHECK_INTERVAL
+        }
+    } else {
+        // Event has started but no active event tracked, check soon
+        Duration::from_secs(10)
     }
 }
 

@@ -6,9 +6,10 @@ use std::io::BufReader;
 use std::str::FromStr;
 
 #[derive(Debug)]
-pub struct Calendar {
-    #[allow(dead_code)]
-    pub events: Vec<(DateTime<Utc>, IcalEvent)>,
+pub struct NextEvent {
+    pub start_time: DateTime<Utc>,
+    pub summary: String,
+    pub video_link: String,
 }
 
 #[derive(Debug)]
@@ -19,9 +20,11 @@ pub enum CalendarError {
     InvalidFormat(String),
     // Other network errors
     NetworkError(String),
+    // No upcoming events with video links
+    NoUpcomingEvents,
 }
 
-pub fn get_ics(url: &str) -> Result<Calendar, CalendarError> {
+pub fn get_next_event(url: &str) -> Result<NextEvent, CalendarError> {
     // Download the iCal file
     let response = reqwest::blocking::get(url).map_err(|e| CalendarError::NetworkError(e.to_string()))?;
 
@@ -59,7 +62,29 @@ pub fn get_ics(url: &str) -> Result<Calendar, CalendarError> {
     // Sort events by start time
     events.sort_by(|a, b| a.0.cmp(&b.0));
 
-    Ok(Calendar { events })
+    // Get current time
+    let now = Utc::now();
+
+    // Filter events that have video links and are in the future or recently started (within 10 minutes)
+    let next_event = events.into_iter().find(|(start_time, event)| {
+        let has_video = get_video_link(event).is_some();
+        let minutes_diff = start_time.signed_duration_since(now).num_minutes();
+        has_video && minutes_diff >= -10 // Include events that started up to 10 minutes ago
+    });
+
+    match next_event {
+        Some((start_time, event)) => {
+            let summary = get_event_summary(&event).unwrap_or_else(|| "Unknown".to_string());
+            let video_link = get_video_link(&event).expect("Event should have video link");
+
+            Ok(NextEvent {
+                start_time,
+                summary,
+                video_link,
+            })
+        }
+        None => Err(CalendarError::NoUpcomingEvents),
+    }
 }
 
 fn extract_datetime(event: &IcalEvent) -> Option<DateTime<Utc>> {

@@ -31,7 +31,7 @@ make format
 make lint
 ```
 
-**ALWASY RUN `make lint` AND `cargo build` AT EVERY STAGE TO ENSURE CODE QUALITY**
+**ALWASY RUN `make lint` AT EVERY STAGE TO ENSURE CODE QUALITY**
 
 ## Architecture
 
