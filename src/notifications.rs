@@ -104,8 +104,7 @@ fn get_delegate() -> &'static Id<NotificationDelegate> {
 
 pub fn startup() -> Result<(), String> {
     // Get the notification center
-    let center: *mut AnyObject =
-        unsafe { msg_send![class!(UNUserNotificationCenter), currentNotificationCenter] };
+    let center: *mut AnyObject = unsafe { msg_send![class!(UNUserNotificationCenter), currentNotificationCenter] };
 
     // Set up our delegate (must be static to avoid being dropped)
     let delegate = get_delegate();
@@ -118,11 +117,12 @@ pub fn startup() -> Result<(), String> {
         let options = 7u64; // UNAuthorizationOptionBadge | UNAuthorizationOptionSound | UNAuthorizationOptionAlert
         let completion_block = RcBlock::new(move |granted: Bool, error: *mut NSError| {
             if !granted.as_bool() {
-                eprintln!("Notification authorization denied!");
                 if !error.is_null() {
                     let error_ref = &*error;
                     let error_desc = error_ref.localizedDescription();
-                    eprintln!("Error: {}", error_desc);
+                    eprintln!("✗ Notification authorization denied: {}", error_desc);
+                } else {
+                    eprintln!("✗ Notification authorization denied - please enable in System Settings > Notifications");
                 }
             }
         });
@@ -174,8 +174,7 @@ pub fn startup() -> Result<(), String> {
 
 pub fn send(title: &str, subtitle: Option<&str>, body: &str, url: Option<&str>) {
     // Get the notification center
-    let center: *mut AnyObject =
-        unsafe { msg_send![class!(UNUserNotificationCenter), currentNotificationCenter] };
+    let center: *mut AnyObject = unsafe { msg_send![class!(UNUserNotificationCenter), currentNotificationCenter] };
 
     // Create notification content
     let content: *mut AnyObject = unsafe { msg_send![class!(UNMutableNotificationContent), new] };
@@ -194,8 +193,7 @@ pub fn send(title: &str, subtitle: Option<&str>, body: &str, url: Option<&str>) 
 
         // Set "Blow" sound
         let sound_name = NSString::from_str("Blow.aiff");
-        let blow_sound: *mut AnyObject =
-            msg_send![class!(UNNotificationSound), soundNamed: &*sound_name];
+        let blow_sound: *mut AnyObject = msg_send![class!(UNNotificationSound), soundNamed: &*sound_name];
         let _: () = msg_send![content, setSound: blow_sound];
 
         // Set interruption level to active to ensure it makes sound
