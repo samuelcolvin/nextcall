@@ -102,7 +102,7 @@ fn get_delegate() -> &'static Id<NotificationDelegate> {
     unsafe { (*ptr::addr_of!(DELEGATE)).assume_init_ref() }
 }
 
-pub fn startup() -> Result<(), String> {
+pub fn startup() {
     // Get the notification center
     let center: *mut AnyObject = unsafe { msg_send![class!(UNUserNotificationCenter), currentNotificationCenter] };
 
@@ -168,8 +168,6 @@ pub fn startup() -> Result<(), String> {
         let categories_set: *mut AnyObject = msg_send![class!(NSSet), setWithObject: category];
         let _: () = msg_send![center, setNotificationCategories: categories_set];
     }
-
-    Ok(())
 }
 
 pub fn send(title: &str, subtitle: Option<&str>, body: &str, url: Option<&str>) {

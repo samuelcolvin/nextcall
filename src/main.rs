@@ -6,6 +6,7 @@ mod logic;
 mod notifications;
 mod say;
 
+use anyhow::Result as AnyhowResult;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
@@ -16,30 +17,36 @@ use tray_icon::{
 use winit::event_loop::{ControlFlow, EventLoopBuilder};
 
 fn main() {
+    notifications::startup();
+    if let Err(err) = run() {
+        notifications::send("NextCall Configuration", Some("ERROR"), &err.to_string(), None);
+        std::process::exit(1);
+    }
+}
+
+fn run() -> AnyhowResult<()> {
     // Create event loop
-    let event_loop = EventLoopBuilder::new().build().unwrap();
-    notifications::startup().unwrap();
+    let event_loop = EventLoopBuilder::new().build()?;
 
     let icon = icon::create_icon_infinity();
 
     let menu = Menu::new();
 
     let about = MenuItem::new("NextCall", true, None);
-    menu.append(&about).unwrap();
+    menu.append(&about)?;
 
     let quit_item = MenuItem::new("Quit", true, None);
-    menu.append(&quit_item).unwrap();
+    menu.append(&quit_item)?;
 
     // Create tray icon
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_icon(icon.clone())
-        .build()
-        .unwrap();
+        .build()?;
 
     let menu_channel = MenuEvent::receiver();
 
-    let Some(config) = config::get_config().unwrap() else {
+    let Some(config) = config::get_config()? else {
         notifications::send(
             "NextCall Configuration",
             Some("WARNING: nextcall.toml not found"),
@@ -62,66 +69,65 @@ fn main() {
     let (duration_tx, duration_rx) = mpsc::channel::<Duration>();
 
     // Run event loop
-    event_loop
-        .run(move |_event, event_loop_window_target| {
-            // Use dynamic check interval based on upcoming events
-            event_loop_window_target.set_control_flow(ControlFlow::WaitUntil(Instant::now() + check_interval));
+    event_loop.run(move |_event, event_loop_window_target| {
+        // Use dynamic check interval based on upcoming events
+        event_loop_window_target.set_control_flow(ControlFlow::WaitUntil(Instant::now() + check_interval));
 
-            // Check for menu events
-            if let Ok(event) = menu_channel.try_recv() {
-                if event.id == quit_item.id() {
-                    event_loop_window_target.exit();
-                }
+        // Check for menu events
+        if let Ok(event) = menu_channel.try_recv() {
+            if event.id == quit_item.id() {
+                event_loop_window_target.exit();
             }
+        }
 
-            // Check for icon updates from background thread
-            if let Ok(Some(new_icon)) = icon_rx.try_recv() {
-                tray_icon.set_icon(Some(new_icon)).unwrap();
-            }
+        // Check for icon updates from background thread
+        if let Ok(Some(new_icon)) = icon_rx.try_recv() {
+            tray_icon.set_icon(Some(new_icon)).unwrap();
+        }
 
-            // Check for active event updates from background thread
-            if let Ok(new_active) = event_rx.try_recv() {
-                active_event = new_active;
-            }
+        // Check for active event updates from background thread
+        if let Ok(new_active) = event_rx.try_recv() {
+            active_event = new_active;
+        }
 
-            // Check for duration updates from background thread
-            if let Ok(new_duration) = duration_rx.try_recv() {
-                check_interval = new_duration;
-            }
+        // Check for duration updates from background thread
+        if let Ok(new_duration) = duration_rx.try_recv() {
+            check_interval = new_duration;
+        }
 
-            let elapsed = match last_update {
-                Some(last_update) => last_update.elapsed(),
-                None => Duration::from_secs(3600),
-            };
+        let elapsed = match last_update {
+            Some(last_update) => last_update.elapsed(),
+            None => Duration::from_secs(3600),
+        };
 
-            // Update based on dynamic check interval
-            if elapsed >= check_interval {
-                last_update = Some(Instant::now());
-                // Spawn thread to run step() without blocking UI
-                let ics_url = config.ical_url.clone();
-                let eleven_labs_key = config.eleven_labs_key.clone();
-                let icon_tx_clone = icon_tx.clone();
-                let event_tx_clone = event_tx.clone();
-                let duration_tx_clone = duration_tx.clone();
-                let mut current_active = active_event.clone();
+        // Update based on dynamic check interval
+        if elapsed >= check_interval {
+            last_update = Some(Instant::now());
+            // Spawn thread to run step() without blocking UI
+            let ics_url = config.ical_url.clone();
+            let eleven_labs_key = config.eleven_labs_key.clone();
+            let icon_tx_clone = icon_tx.clone();
+            let event_tx_clone = event_tx.clone();
+            let duration_tx_clone = duration_tx.clone();
+            let mut current_active = active_event.clone();
 
-                std::thread::spawn(move || {
-                    if let Ok(result) = logic::step(&ics_url, eleven_labs_key.as_deref(), current_active.as_mut()) {
-                        if let Some(icon) = result.new_icon {
-                            let _ = icon_tx_clone.send(Some(icon));
-                        }
-                        // Send back the updated active event (or the new one if there is one)
-                        if let Some(new_active) = result.new_active_event {
-                            let _ = event_tx_clone.send(Some(new_active));
-                        } else if let Some(active) = current_active {
-                            // Send back the potentially updated current active event
-                            let _ = event_tx_clone.send(Some(active));
-                        }
-                        // Send back the next check duration
-                        let _ = duration_tx_clone.send(result.next_check_duration);
+            std::thread::spawn(move || {
+                if let Ok(result) = logic::step(&ics_url, eleven_labs_key.as_deref(), current_active.as_mut()) {
+                    if let Some(icon) = result.new_icon {
+                        let _ = icon_tx_clone.send(Some(icon));
                     }
-                });
-            }
-        })
-        .unwrap();
+                    // Send back the updated active event (or the new one if there is one)
+                    if let Some(new_active) = result.new_active_event {
+                        let _ = event_tx_clone.send(Some(new_active));
+                    } else if let Some(active) = current_active {
+                        // Send back the potentially updated current active event
+                        let _ = event_tx_clone.send(Some(active));
+                    }
+                    // Send back the next check duration
+                    let _ = duration_tx_clone.send(result.next_check_duration);
+                }
+            });
+        }
+    })?;
+    Ok(())
 }
