@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use ical::IcalParser;
-use ical::parser::ical::component::IcalEvent;
+pub use ical::parser::ical::component::IcalEvent;
 use std::io::BufReader;
 
 #[derive(Debug)]
@@ -88,11 +88,47 @@ fn extract_datetime(event: &IcalEvent) -> Option<DateTime<Utc>> {
     None
 }
 
-#[allow(dead_code)]
-fn get_property(event: &IcalEvent, name: &str) -> Option<String> {
+pub fn get_property(event: &IcalEvent, name: &str) -> Option<String> {
     event
         .properties
         .iter()
         .find(|p| p.name == name)
         .and_then(|p| p.value.clone())
+}
+
+pub fn get_event_summary(event: &IcalEvent) -> Option<String> {
+    get_property(event, "SUMMARY")
+}
+
+pub fn get_video_link(event: &IcalEvent) -> Option<String> {
+    // Check for URL property first (Zoom, Teams, etc.)
+    if let Some(url) = get_property(event, "URL") {
+        if url.starts_with("http") {
+            return Some(url);
+        }
+    }
+
+    // Check location field
+    if let Some(location) = get_property(event, "LOCATION") {
+        if location.starts_with("http") {
+            return Some(location);
+        }
+    }
+
+    // Check description for meeting links
+    if let Some(description) = get_property(event, "DESCRIPTION") {
+        // Look for common video conferencing URLs
+        for line in description.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("http")
+                && (trimmed.contains("zoom.us")
+                    || trimmed.contains("meet.google.com")
+                    || trimmed.contains("teams.microsoft.com"))
+            {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    None
 }

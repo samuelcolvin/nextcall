@@ -44,18 +44,21 @@ fn main() {
         notifications::send("NextCall Configuration", None, "WARNING: nextcall.toml not found", None);
     }
 
-    // Track last update time and icon state
+    // Track last update time and active event
     let mut last_update: Option<Instant> = None;
+    let mut active_event: Option<logic::ActiveEvent> = None;
 
     // Channel for receiving icon updates from background thread
     let (icon_tx, icon_rx) = mpsc::channel::<Option<tray_icon::Icon>>();
+    // Channel for receiving active event updates from background thread
+    let (event_tx, event_rx) = mpsc::channel::<Option<logic::ActiveEvent>>();
 
     // Run event loop
     event_loop
         .run(move |_event, event_loop_window_target| {
-            // Poll for new events
+            // Poll more frequently (every 10 seconds) to catch events and reminders
             event_loop_window_target
-                .set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(200)));
+                .set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(10_000)));
 
             // Check for menu events
             if let Ok(event) = menu_channel.try_recv() {
@@ -69,20 +72,39 @@ fn main() {
                 tray_icon.set_icon(Some(new_icon)).unwrap();
             }
 
+            // Check for active event updates from background thread
+            if let Ok(new_active) = event_rx.try_recv() {
+                active_event = new_active;
+            }
+
             let elapsed = match last_update {
                 Some(last_update) => last_update.elapsed(),
                 None => Duration::from_secs(3600),
             };
-            if elapsed >= Duration::from_secs(60) {
+
+            // Update every 10 seconds to catch events and reminders
+            if elapsed >= Duration::from_secs(10) {
                 last_update = Some(Instant::now());
                 if let Some(config) = opt_config.as_ref() {
                     // Spawn thread to run step() without blocking UI
                     let ics_url = config.ical_url.clone();
                     let eleven_labs_key = config.eleven_labs_key.clone();
-                    let tx = icon_tx.clone();
+                    let icon_tx_clone = icon_tx.clone();
+                    let event_tx_clone = event_tx.clone();
+                    let mut current_active = active_event.clone();
+
                     std::thread::spawn(move || {
-                        if let Ok(icon) = logic::step(&ics_url, eleven_labs_key.as_deref()) {
-                            let _ = tx.send(icon);
+                        if let Ok(result) = logic::step(&ics_url, eleven_labs_key.as_deref(), current_active.as_mut()) {
+                            if let Some(icon) = result.new_icon {
+                                let _ = icon_tx_clone.send(Some(icon));
+                            }
+                            // Send back the updated active event (or the new one if there is one)
+                            if let Some(new_active) = result.new_active_event {
+                                let _ = event_tx_clone.send(Some(new_active));
+                            } else if let Some(active) = current_active {
+                                // Send back the potentially updated current active event
+                                let _ = event_tx_clone.send(Some(active));
+                            }
                         }
                     });
                 }

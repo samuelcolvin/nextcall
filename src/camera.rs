@@ -14,8 +14,9 @@ struct CMIOObjectPropertyAddress {
     element: u32,
 }
 
-#[link(name = "AVFoundation")]
-#[link(name = "CoreMediaIO")]
+#[allow(clippy::duplicated_attributes)]
+#[link(name = "AVFoundation", kind = "framework")]
+#[link(name = "CoreMediaIO", kind = "framework")]
 unsafe extern "C" {
     fn CMIOObjectGetPropertyData(
         object_id: u32,
