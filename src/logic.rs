@@ -20,7 +20,7 @@ pub fn step(ics_url: &str) -> AnyhowResult<Option<tray_icon::Icon>> {
 
     let new_icon = icon::create_icon_with_text("60", false);
 
-    say::say("Call with John Doe just started.").unwrap();
+    say::say("Call with John Doe just started.", Some("key")).unwrap();
     notifications::send("Next Call", None, &format!("calendar: {calendar:?}"), None);
 
     if camera::camera_active() {
