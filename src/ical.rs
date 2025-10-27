@@ -67,9 +67,8 @@ pub fn get_next_event(url: &str) -> Result<NextEvent, CalendarError> {
 
     // Filter events that have video links and are in the future or recently started (within 10 minutes)
     let next_event = events.into_iter().find(|(start_time, event)| {
-        let has_video = get_video_link(event).is_some();
-        let minutes_diff = start_time.signed_duration_since(now).num_minutes();
-        has_video && minutes_diff >= -10 // Include events that started up to 10 minutes ago
+        // Include events that started up to 10 minutes ago
+        get_video_link(event).is_some() && start_time.signed_duration_since(now).num_minutes() >= -10
     });
 
     match next_event {

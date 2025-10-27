@@ -154,7 +154,7 @@ fn background(config: config::Config, icon_tx: Sender<Cow<'static, str>>) -> Any
                 sleep(duration);
             }
             logic::StepNext::EventStarted(event) => {
-                logic::event_started(event, config.eleven_labs_key.as_deref())?;
+                logic::event_started(event, config.eleven_labs_key.as_deref(), &icon_tx)?;
             }
         };
     }
