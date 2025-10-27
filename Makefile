@@ -4,9 +4,9 @@
 # so doesn't render color without some help
 export CARGO_TERM_COLOR=$(shell (test -t 0 && echo "always") || echo "auto")
 
-.PHONY: build-dev  ## Build the development version of the package
-build-dev:
-	cargo build
+.PHONY: build  ## Build binary and app
+build:
+	./build.sh
 
 .PHONY: format  ## Auto-format rust and python source files
 format:

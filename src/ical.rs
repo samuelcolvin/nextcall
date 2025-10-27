@@ -65,10 +65,10 @@ pub fn get_next_event(url: &str) -> Result<NextEvent, CalendarError> {
     // Get current time
     let now = Utc::now();
 
-    // Filter events that have video links and are in the future or recently started (within 10 minutes)
+    // Filter events that have video links and are in the future or recently started (within 8 minutes)
     let next_event = events.into_iter().find(|(start_time, event)| {
-        // Include events that started up to 10 minutes ago
-        get_video_link(event).is_some() && start_time.signed_duration_since(now).num_minutes() >= -10
+        // Include events that started up to 8 minutes ago
+        get_video_link(event).is_some() && start_time.signed_duration_since(now).num_minutes() >= -8
     });
 
     match next_event {
