@@ -134,7 +134,6 @@ fn run_ui() -> AnyhowResult<()> {
 
         // Check for icon updates from background thread
         if let Ok(new_icon) = icon_rx.try_recv() {
-            println!("got new icon {:?}", new_icon);
             tray_icon
                 .set_icon(Some(icon::create_icon_with_text(&new_icon)))
                 .unwrap();
@@ -144,8 +143,10 @@ fn run_ui() -> AnyhowResult<()> {
 }
 
 fn background(config: config::Config, icon_tx: Sender<Cow<'static, str>>) -> AnyhowResult<()> {
+    let mut first_run = true;
     loop {
-        let result = logic::find_next_event(&config.ical_url)?;
+        let result = logic::find_next_event(&config.ical_url, first_run)?;
+        first_run = false;
 
         let _ = icon_tx.send(result.icon_text);
 

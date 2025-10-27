@@ -37,10 +37,10 @@ impl StepResult {
     }
 }
 
-pub fn find_next_event(ics_url: &str) -> AnyhowResult<StepResult> {
+pub fn find_next_event(ics_url: &str, first_run: bool) -> AnyhowResult<StepResult> {
     info!("Checking calendar for upcoming events");
     let start = Instant::now();
-    let request_result = ical::get_next_event(ics_url);
+    let request_result = ical::get_next_event(ics_url, first_run);
     let request_duration = start.elapsed();
     let next_event = match request_result {
         Ok(event) => event,
@@ -119,13 +119,14 @@ pub fn event_started(
     maybe_notify(&event, eleven_labs_key, true)?;
 
     for i in 0..5 {
-        println!("step {i}");
         let minutes = Utc::now().signed_duration_since(event.start_time).to_std()?.as_secs() as f32 / 60.0;
         icon_tx.send(format!("-{minutes:.0}").into())?;
         if i == 2 {
             maybe_notify(&event, eleven_labs_key, false)?
         }
-        sleep(Duration::from_secs(60));
+        // sleep until the top of the next minute
+        let until_min_end = Duration::from_secs(60 - Utc::now().second() as u64);
+        sleep(until_min_end);
     }
 
     maybe_notify(&event, eleven_labs_key, false)

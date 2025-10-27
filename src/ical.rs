@@ -24,7 +24,7 @@ pub enum CalendarError {
     NoUpcomingEvents,
 }
 
-pub fn get_next_event(url: &str) -> Result<NextEvent, CalendarError> {
+pub fn get_next_event(url: &str, first_run: bool) -> Result<NextEvent, CalendarError> {
     // Download the iCal file
     let response = reqwest::blocking::get(url).map_err(|e| CalendarError::NetworkError(e.to_string()))?;
 
@@ -66,9 +66,9 @@ pub fn get_next_event(url: &str) -> Result<NextEvent, CalendarError> {
     let now = Utc::now();
 
     // Filter events that have video links and are in the future or recently started (within 8 minutes)
+    let max_age = if first_run { 0 } else { -8 };
     let next_event = events.into_iter().find(|(start_time, event)| {
-        // Include events that started up to 8 minutes ago
-        get_video_link(event).is_some() && start_time.signed_duration_since(now).num_minutes() >= -8
+        get_video_link(event).is_some() && start_time.signed_duration_since(now).num_minutes() >= max_age
     });
 
     match next_event {
