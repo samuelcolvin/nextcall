@@ -9,6 +9,10 @@ pub struct Config {
     pub ical_url: String,
 }
 
+pub fn home() -> Result<String> {
+    std::env::var("HOME").context("Failed to get HOME environment variable")
+}
+
 /// Returns the path to the config file (nextcall.toml)
 /// Checks current working directory first, then home directory
 fn get_config_path() -> Result<Option<PathBuf>> {
@@ -18,10 +22,7 @@ fn get_config_path() -> Result<Option<PathBuf>> {
         return Ok(Some(cwd_config));
     }
 
-    // Check home directory
-    let home = std::env::var("HOME").context("Failed to get HOME environment variable")?;
-
-    let home_config = PathBuf::from(home).join("nextcall.toml");
+    let home_config = PathBuf::from(home()?).join("nextcall.toml");
     if home_config.exists() {
         return Ok(Some(home_config));
     }

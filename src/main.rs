@@ -7,35 +7,88 @@ mod notifications;
 mod say;
 
 use anyhow::Result as AnyhowResult;
+use std::borrow::Cow;
+use std::fs::OpenOptions;
 use std::sync::mpsc;
+use std::sync::mpsc::Sender;
+use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
+use tracing::{error, info};
+use tracing_subscriber::fmt::time::LocalTime;
 use tray_icon::{
     TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuItem},
 };
 use winit::event_loop::{ControlFlow, EventLoopBuilder};
 
+fn init_logging() -> AnyhowResult<()> {
+    // Expand home directory
+    let home = config::home()?;
+    let log_path = format!("{}/nextcall.log", home);
+
+    // Truncate/create the log file
+    let _log_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log_path)?;
+
+    // Set up tracing subscriber with both file and stderr output
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(move || {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .expect("Failed to open log file")
+        })
+        .with_timer(LocalTime::rfc_3339())
+        .with_ansi(false)
+        .with_target(false);
+
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_timer(LocalTime::rfc_3339())
+        .with_ansi(true)
+        .with_target(false);
+
+    tracing_subscriber::registry()
+        .with(file_layer)
+        .with(stderr_layer)
+        .with(LevelFilter::INFO)
+        .init();
+
+    Ok(())
+}
+
 fn main() {
+    if let Err(e) = init_logging() {
+        eprintln!("Failed to initialize logging: {}", e);
+    }
+
+    info!("NextCall starting up");
+
     notifications::startup();
-    if let Err(err) = run() {
+    if let Err(err) = run_ui() {
+        error!("Fatal error: {}", err);
         notifications::send("NextCall Configuration", Some("ERROR"), &err.to_string(), None);
         std::process::exit(1);
     }
 }
 
-fn run() -> AnyhowResult<()> {
-    // Create event loop
+fn run_ui() -> AnyhowResult<()> {
     let event_loop = EventLoopBuilder::new().build()?;
 
     let icon = icon::create_icon_infinity();
 
     let menu = Menu::new();
 
-    let about = MenuItem::new("NextCall", true, None);
-    menu.append(&about)?;
-
-    let quit_item = MenuItem::new("Quit", true, None);
+    let quit_item = MenuItem::new("Quit Nextcall", true, None);
     menu.append(&quit_item)?;
 
     // Create tray icon
@@ -47,6 +100,7 @@ fn run() -> AnyhowResult<()> {
     let menu_channel = MenuEvent::receiver();
 
     let Some(config) = config::get_config()? else {
+        error!("Configuration file nextcall.toml not found in current directory or home directory");
         notifications::send(
             "NextCall Configuration",
             Some("WARNING: nextcall.toml not found"),
@@ -56,22 +110,20 @@ fn run() -> AnyhowResult<()> {
         std::process::exit(1);
     };
 
-    // Track last update time and active event
-    let mut last_update: Option<Instant> = None;
-    let mut active_event: Option<logic::ActiveEvent> = None;
-    let mut check_interval = Duration::from_secs(180); // Default: 3 minutes
+    info!("Configuration loaded successfully from {:?}", config);
 
     // Channel for receiving icon updates from background thread
-    let (icon_tx, icon_rx) = mpsc::channel::<Option<tray_icon::Icon>>();
-    // Channel for receiving active event updates from background thread
-    let (event_tx, event_rx) = mpsc::channel::<Option<logic::ActiveEvent>>();
-    // Channel for receiving next check duration from background thread
-    let (duration_tx, duration_rx) = mpsc::channel::<Duration>();
+    let (icon_tx, icon_rx) = mpsc::channel::<Cow<'static, str>>();
+
+    let icon_tx_clone = icon_tx.clone();
+    std::thread::spawn(move || {
+        background(config, icon_tx_clone).unwrap();
+    });
 
     // Run event loop
     event_loop.run(move |_event, event_loop_window_target| {
         // Use dynamic check interval based on upcoming events
-        event_loop_window_target.set_control_flow(ControlFlow::WaitUntil(Instant::now() + check_interval));
+        event_loop_window_target.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(10)));
 
         // Check for menu events
         if let Ok(event) = menu_channel.try_recv() {
@@ -81,53 +133,29 @@ fn run() -> AnyhowResult<()> {
         }
 
         // Check for icon updates from background thread
-        if let Ok(Some(new_icon)) = icon_rx.try_recv() {
-            tray_icon.set_icon(Some(new_icon)).unwrap();
-        }
-
-        // Check for active event updates from background thread
-        if let Ok(new_active) = event_rx.try_recv() {
-            active_event = new_active;
-        }
-
-        // Check for duration updates from background thread
-        if let Ok(new_duration) = duration_rx.try_recv() {
-            check_interval = new_duration;
-        }
-
-        let elapsed = match last_update {
-            Some(last_update) => last_update.elapsed(),
-            None => Duration::from_secs(3600),
-        };
-
-        // Update based on dynamic check interval
-        if elapsed >= check_interval {
-            last_update = Some(Instant::now());
-            // Spawn thread to run step() without blocking UI
-            let ics_url = config.ical_url.clone();
-            let eleven_labs_key = config.eleven_labs_key.clone();
-            let icon_tx_clone = icon_tx.clone();
-            let event_tx_clone = event_tx.clone();
-            let duration_tx_clone = duration_tx.clone();
-            let mut current_active = active_event.clone();
-
-            std::thread::spawn(move || {
-                if let Ok(result) = logic::step(&ics_url, eleven_labs_key.as_deref(), current_active.as_mut()) {
-                    if let Some(icon) = result.new_icon {
-                        let _ = icon_tx_clone.send(Some(icon));
-                    }
-                    // Send back the updated active event (or the new one if there is one)
-                    if let Some(new_active) = result.new_active_event {
-                        let _ = event_tx_clone.send(Some(new_active));
-                    } else if let Some(active) = current_active {
-                        // Send back the potentially updated current active event
-                        let _ = event_tx_clone.send(Some(active));
-                    }
-                    // Send back the next check duration
-                    let _ = duration_tx_clone.send(result.next_check_duration);
-                }
-            });
+        if let Ok(new_icon) = icon_rx.try_recv() {
+            println!("got new icon {:?}", new_icon);
+            tray_icon
+                .set_icon(Some(icon::create_icon_with_text(&new_icon)))
+                .unwrap();
         }
     })?;
     Ok(())
+}
+
+fn background(config: config::Config, icon_tx: Sender<Cow<'static, str>>) -> AnyhowResult<()> {
+    loop {
+        let result = logic::find_next_event(&config.ical_url)?;
+
+        let _ = icon_tx.send(result.icon_text);
+
+        match result.next {
+            logic::StepNext::Sleep(duration) => {
+                sleep(duration);
+            }
+            logic::StepNext::EventStarted(event) => {
+                logic::event_started(event, config.eleven_labs_key.as_deref())?;
+            }
+        };
+    }
 }

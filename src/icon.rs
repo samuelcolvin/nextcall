@@ -2,7 +2,8 @@ use ab_glyph::{FontArc, PxScale};
 use image::{ImageBuffer, Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
 
-pub fn create_icon_with_text(text: &str, large: bool) -> tray_icon::Icon {
+pub fn create_icon_with_text(text: &str) -> tray_icon::Icon {
+    let large = text.len() <= 1;
     let size = 64;
     let mut img: RgbaImage = ImageBuffer::new(size, size);
 
@@ -36,5 +37,5 @@ pub fn create_icon_with_text(text: &str, large: bool) -> tray_icon::Icon {
 }
 
 pub fn create_icon_infinity() -> tray_icon::Icon {
-    create_icon_with_text("…", false)
+    create_icon_with_text("...")
 }
