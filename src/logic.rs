@@ -28,55 +28,50 @@ pub struct StepResult {
     pub next: StepNext,
 }
 
-impl StepResult {
-    fn network_error() -> Self {
-        Self {
-            icon_text: "E".into(),
-            next: StepNext::Sleep(DEFAULT_CHECK_INTERVAL),
-        }
-    }
-}
-
-pub fn find_next_event(ics_url: &str, first_run: bool) -> AnyhowResult<StepResult> {
+pub fn find_next_event(
+    ics_url: &str,
+    first_run: bool,
+    previous_next_event: Option<ical::NextEvent>,
+) -> Option<ical::NextEvent> {
     info!("Checking calendar for upcoming events");
     let start = Instant::now();
     let request_result = ical::get_next_event(ics_url, first_run);
     let request_duration = start.elapsed();
-    let next_event = match request_result {
-        Ok(event) => event,
+    match request_result {
+        Ok(event) => {
+            info!("Got calendar in {request_duration:?}, next call {:?}", event.summary);
+            Some(event)
+        }
         Err(ical::CalendarError::HttpStatus(err)) => {
             error!("Got calendar in {request_duration:?}, HTTP error fetching calendar: {err}");
-            notifications::send("Next Call", Some("Fetch failed"), &err, None);
-            return Ok(StepResult::network_error());
+            notifications::send("Next Call", Some("HTTP error fetching calendar"), &err, None);
+            previous_next_event
         }
         Err(ical::CalendarError::InvalidFormat(err)) => {
             error!("Got calendar in {request_duration:?}, Invalid iCal format: {err}");
             notifications::send("Next Call", Some("Invalid ical response"), &err, None);
-            return Ok(StepResult::network_error());
+            previous_next_event
         }
         Err(ical::CalendarError::NetworkError(err)) => {
             warn!("Got calendar in {request_duration:?}, Network error fetching calendar: {err}");
-            return Ok(StepResult::network_error());
+            notifications::send("Next Call", Some("Network error fetching calendar"), &err, None);
+            previous_next_event
         }
         Err(ical::CalendarError::NoUpcomingEvents) => {
             info!("Got calendar in {request_duration:?}, No upcoming calls with video links");
-            return Ok(StepResult {
-                icon_text: "...".into(),
-                next: StepNext::Sleep(DEFAULT_CHECK_INTERVAL),
-            });
+            None
         }
-    };
+    }
+}
 
+pub fn calc_sleep(next_event: &ical::NextEvent) -> AnyhowResult<StepResult> {
     let now = Utc::now();
     let until_start = next_event.start_time.signed_duration_since(now);
     if until_start < TimeDelta::zero() {
-        info!(
-            "Got calendar in {request_duration:?}, next call {:?} started",
-            next_event.summary
-        );
+        info!("next call {:?} started", next_event.summary);
         return Ok(StepResult {
             icon_text: format!("{:.0}", until_start.as_seconds_f32() / 60.0).into(),
-            next: StepNext::EventStarted(next_event),
+            next: StepNext::EventStarted(next_event.clone()),
         });
     }
 
@@ -97,7 +92,7 @@ pub fn find_next_event(ics_url: &str, first_run: bool) -> AnyhowResult<StepResul
     };
 
     info!(
-        "Got calendar in {request_duration:?}, next call {:?} starts at {:?} in {:.2}s, waiting for {:?}",
+        "next call {:?} starts at {:?} in {:.2}s, waiting for {:?}",
         next_event.summary,
         next_event.start_time,
         until_start.as_seconds_f32(),
@@ -151,7 +146,7 @@ fn maybe_notify(event: &NextEvent, eleven_labs_key: Option<&str>, always_notify:
     if !camera_active {
         let message = format!(
             "Your call {:?} started {}{}",
-            event.summary,
+            sayevent_summary(event),
             time_since_description(minutes),
             if minutes > 1.0 { ", join it now!" } else { "" }
         );
@@ -160,10 +155,27 @@ fn maybe_notify(event: &NextEvent, eleven_labs_key: Option<&str>, always_notify:
     Ok(())
 }
 
-fn time_since_description(minutes: f32) -> String {
+fn time_since_description(minutes: f32) -> Cow<'static, str> {
     if minutes < 1.0 {
-        "just now".to_string()
+        "just now".into()
     } else {
-        format!("{minutes:.0} minutes ago")
+        format!("{minutes:.0} minutes ago").into()
+    }
+}
+
+/// Left strip `call` and `-` from the event summary
+fn sayevent_summary(event: &NextEvent) -> &str {
+    let mut summary = event.summary.as_str().trim_start();
+    summary = istrip(summary, "call").trim_start();
+    summary = istrip(summary, "-").trim_start();
+    summary = istrip(summary, ":").trim_start();
+    summary
+}
+
+fn istrip<'a>(s: &'a str, prefix: &str) -> &'a str {
+    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        &s[prefix.len()..]
+    } else {
+        s
     }
 }

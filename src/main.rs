@@ -144,10 +144,16 @@ fn run_ui() -> AnyhowResult<()> {
 
 fn background(config: config::Config, icon_tx: Sender<Cow<'static, str>>) -> AnyhowResult<()> {
     let mut first_run = true;
+    let mut next_event_opt: Option<ical::NextEvent> = None;
     loop {
-        let result = logic::find_next_event(&config.ical_url, first_run)?;
+        next_event_opt = logic::find_next_event(&config.ical_url, first_run, next_event_opt);
         first_run = false;
 
+        let Some(ref next_event) = next_event_opt else {
+            continue;
+        };
+
+        let result = logic::calc_sleep(next_event)?;
         let _ = icon_tx.send(result.icon_text);
 
         match result.next {

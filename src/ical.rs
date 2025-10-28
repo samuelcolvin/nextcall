@@ -5,7 +5,7 @@ pub use ical::parser::ical::component::IcalEvent;
 use std::io::BufReader;
 use std::str::FromStr;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NextEvent {
     pub start_time: DateTime<Utc>,
     pub summary: String,
