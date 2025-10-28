@@ -42,15 +42,35 @@ pub fn get_next_event(url: &str, first_run: bool) -> Result<NextEvent, CalendarE
 
     // Parse the iCal file
     let parser = IcalParser::new(reader);
-    let mut events = Vec::new();
+    let mut next_event: Result<NextEvent, CalendarError> = Err(CalendarError::NoUpcomingEvents);
+
+    // Include only events that are in the future or recently started (within 8 minutes)
+    let max_age = if first_run { 0 } else { -8 };
+    let now = Utc::now();
 
     for calendar in parser {
         match calendar {
             Ok(cal) => {
                 for event in cal.events {
-                    if let Some(start_time) = extract_datetime(&event) {
-                        events.push((start_time, event));
+                    let Some(start_time) = extract_datetime(&event) else {
+                        continue;
+                    };
+                    if start_time.signed_duration_since(now).num_minutes() < max_age {
+                        continue;
                     }
+                    let Some(video_link) = get_video_link(&event) else {
+                        continue;
+                    };
+                    if let Ok(ref current_next_event) = next_event {
+                        if start_time > current_next_event.start_time {
+                            continue;
+                        }
+                    }
+                    next_event = Ok(NextEvent {
+                        start_time,
+                        summary: get_event_summary(&event).unwrap_or_else(|| "Unknown".to_string()),
+                        video_link,
+                    })
                 }
             }
             Err(e) => {
@@ -58,32 +78,7 @@ pub fn get_next_event(url: &str, first_run: bool) -> Result<NextEvent, CalendarE
             }
         }
     }
-
-    // Sort events by start time
-    events.sort_by(|a, b| a.0.cmp(&b.0));
-
-    // Get current time
-    let now = Utc::now();
-
-    // Filter events that have video links and are in the future or recently started (within 8 minutes)
-    let max_age = if first_run { 0 } else { -8 };
-    let next_event = events.into_iter().find(|(start_time, event)| {
-        get_video_link(event).is_some() && start_time.signed_duration_since(now).num_minutes() >= max_age
-    });
-
-    match next_event {
-        Some((start_time, event)) => {
-            let summary = get_event_summary(&event).unwrap_or_else(|| "Unknown".to_string());
-            let video_link = get_video_link(&event).expect("Event should have video link");
-
-            Ok(NextEvent {
-                start_time,
-                summary,
-                video_link,
-            })
-        }
-        None => Err(CalendarError::NoUpcomingEvents),
-    }
+    next_event
 }
 
 fn extract_datetime(event: &IcalEvent) -> Option<DateTime<Utc>> {
