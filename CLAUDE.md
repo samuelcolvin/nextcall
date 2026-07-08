@@ -72,16 +72,17 @@ The main thread runs the AppKit event loop (`tray::run`, never returns; the "Qui
 
 ### Core Business Logic (`src/logic.rs`)
 Drives the background loop:
-1. `find_next_event` fetches/parses the iCal feed and keeps the previous event on transient errors
+1. `find_events` fetches/parses the iCal feed and keeps the previous events on transient errors
 2. `calc_sleep` picks the tray text — "..." when >60 minutes away, minutes countdown when closer — and how long to sleep before re-checking
 3. `event_started` runs the alert sequence: notifications at event start, +2 and +5 minutes, with a negative minutes countdown in the tray
-4. Camera status is checked before alerts to avoid interrupting active calls
+4. Camera status is checked before alerts to avoid interrupting active calls, and joining a call cancels the remaining alerts within seconds
+5. While any event is in progress, `watch_camera_until` replaces plain sleeps: it polls the camera every 5s and shows the person icon while the user is on the call
 
 ### Calendar Integration (`src/ical.rs`)
 - Downloads and parses iCal feeds using the `ical` crate
 - Extracts video links from URL, LOCATION, or DESCRIPTION fields
 - Supports Zoom, Google Meet, and Microsoft Teams URLs
-- Returns events sorted by start time
+- Returns a `CalendarEvents` pair: `next` (earliest upcoming event, or one started <10 min ago — drives countdown and alerts) and `in_progress` (most recently started event within the last hour — drives the person icon)
 
 ### Notifications (`src/notifications.rs` + `src/native/notifications.m`)
 macOS UserNotifications framework integration in Objective-C:
@@ -100,7 +101,7 @@ Dual implementation:
 - macOS built-in `say` command with "Moira" voice as fallback
 
 ### Tray Icon (`src/tray.rs` + `src/native/tray.m`)
-An AppKit `NSStatusItem` whose title is the countdown text — no image rendering involved. `tray_set_title` is thread-safe (dispatches to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns.
+An AppKit `NSStatusItem` whose title is the countdown text — no image rendering involved. While the user is on the current call (camera active after the alert sequence), a person SF Symbol is shown instead (`tray_show_person`). `tray_set_title`/`tray_show_person` are thread-safe (dispatch to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns.
 
 ### Build Configuration (`build.rs`)
 Compiles `src/native/*.m` with the `cc` crate (ARC enabled) and links the required frameworks: Foundation, AppKit, UserNotifications, CoreMediaIO.

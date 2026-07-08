@@ -5,11 +5,23 @@ pub use ical::parser::ical::component::IcalEvent;
 use std::io::BufReader;
 use std::str::FromStr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NextEvent {
     pub start_time: DateTime<Utc>,
     pub summary: String,
     pub video_link: String,
+}
+
+/// The calendar events the app cares about right now. Both may point at the
+/// same event (one that started a few minutes ago).
+#[derive(Debug, Clone, Default)]
+pub struct CalendarEvents {
+    /// Earliest event that is upcoming or started within the alert window;
+    /// drives the countdown and the alert sequence.
+    pub next: Option<NextEvent>,
+    /// Most recently started event within the last hour; drives the person
+    /// icon while the camera is active.
+    pub in_progress: Option<NextEvent>,
 }
 
 #[derive(Debug)]
@@ -20,11 +32,20 @@ pub enum CalendarError {
     InvalidFormat(String),
     // Other network errors
     NetworkError(String),
-    // No upcoming events with video links
-    NoUpcomingEvents,
 }
 
-pub fn get_next_event(url: &str, first_run: bool) -> Result<NextEvent, CalendarError> {
+/// Alert window: events that started less than this many minutes ago still
+/// count as `next`, so their alert sequence can run (it ends at +5 minutes).
+pub const NEXT_MAX_AGE_MINUTES: i64 = 10;
+
+/// In-progress window: events that started within the last hour count as
+/// `in_progress`, so being on the call shows the person icon for its
+/// (assumed ~1h) duration.
+const IN_PROGRESS_MAX_AGE_MINUTES: i64 = 60;
+
+/// Fetches and parses the iCal feed, returning the relevant events (see
+/// [`CalendarEvents`]). Only events with video links are considered.
+pub fn get_events(url: &str) -> Result<CalendarEvents, CalendarError> {
     // Download the iCal file
     let response = reqwest::blocking::get(url).map_err(|e| CalendarError::NetworkError(e.to_string()))?;
 
@@ -42,10 +63,7 @@ pub fn get_next_event(url: &str, first_run: bool) -> Result<NextEvent, CalendarE
 
     // Parse the iCal file
     let parser = IcalParser::new(reader);
-    let mut next_event: Result<NextEvent, CalendarError> = Err(CalendarError::NoUpcomingEvents);
-
-    // Include only events that are in the future or recently started (within 8 minutes)
-    let max_age = if first_run { 0 } else { -8 };
+    let mut events = CalendarEvents::default();
     let now = Utc::now();
 
     for calendar in parser {
@@ -55,22 +73,34 @@ pub fn get_next_event(url: &str, first_run: bool) -> Result<NextEvent, CalendarE
                     let Some(start_time) = extract_datetime(&event) else {
                         continue;
                     };
-                    if start_time.signed_duration_since(now).num_minutes() < max_age {
+                    // positive = the event started that long ago
+                    let age = now.signed_duration_since(start_time);
+                    if age.num_minutes() > IN_PROGRESS_MAX_AGE_MINUTES {
                         continue;
                     }
                     let Some(video_link) = get_video_link(&event) else {
                         continue;
                     };
-                    if let Ok(ref current_next_event) = next_event
-                        && start_time > current_next_event.start_time
-                    {
-                        continue;
-                    }
-                    next_event = Ok(NextEvent {
+                    let candidate = NextEvent {
                         start_time,
                         summary: get_event_summary(&event).unwrap_or_else(|| "Unknown".to_string()),
                         video_link,
-                    })
+                    };
+                    // next: the earliest upcoming or recently started event
+                    if age.num_minutes() <= NEXT_MAX_AGE_MINUTES
+                        && events.next.as_ref().is_none_or(|n| candidate.start_time < n.start_time)
+                    {
+                        events.next = Some(candidate.clone());
+                    }
+                    // in_progress: the most recently *started* event
+                    if age.num_seconds() >= 0
+                        && events
+                            .in_progress
+                            .as_ref()
+                            .is_none_or(|p| candidate.start_time > p.start_time)
+                    {
+                        events.in_progress = Some(candidate);
+                    }
                 }
             }
             Err(e) => {
@@ -78,7 +108,7 @@ pub fn get_next_event(url: &str, first_run: bool) -> Result<NextEvent, CalendarE
             }
         }
     }
-    next_event
+    Ok(events)
 }
 
 fn extract_datetime(event: &IcalEvent) -> Option<DateTime<Utc>> {

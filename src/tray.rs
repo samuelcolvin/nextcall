@@ -9,6 +9,8 @@ use std::ffi::{CString, c_char};
 unsafe extern "C" {
     fn tray_run();
     fn tray_set_title(title: *const c_char);
+    fn tray_set_status(status: *const c_char);
+    fn tray_show_person();
 }
 
 /// Creates the status item and runs the AppKit event loop. Never returns:
@@ -18,8 +20,22 @@ pub fn run() -> ! {
     unreachable!("tray_run only returns when the app is terminating")
 }
 
-/// Sets the menu bar text (e.g. "5", "-2", "..."). Thread-safe: the update is
-/// dispatched to the main queue, and is queued if called before [`run`].
+/// Shows a person icon instead of text, indicating the user is on the current
+/// call. Cleared by the next [`set_title`]. Thread-safe like [`set_title`].
+pub fn show_person() {
+    unsafe { tray_show_person() }
+}
+
+/// Updates the status line at the top of the tray menu (e.g. "Next: standup
+/// at 14:00"). Thread-safe like [`set_title`].
+pub fn set_status(status: &str) {
+    let Ok(status) = CString::new(status) else { return };
+    unsafe { tray_set_status(status.as_ptr()) }
+}
+
+/// Sets the menu bar text (e.g. "5", "-2", "..."), replacing a person icon if
+/// one is shown. Thread-safe: the update is dispatched to the main queue, and
+/// is queued if called before [`run`].
 pub fn set_title(title: &str) {
     // Interior NULs can't occur in the countdown strings we generate; skip the
     // update rather than panicking if that ever changes.

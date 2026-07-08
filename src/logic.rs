@@ -12,8 +12,30 @@ use std::{
 };
 use tracing::{error, info, warn};
 
-// Default check interval: 3 minutes
-const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(180);
+/// Default calendar re-check interval: 3 minutes.
+pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(180);
+
+/// How often to re-check the camera while a call is in progress, so the tray
+/// reflects joining/leaving the call within seconds.
+const CAMERA_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Sleeps until `deadline`, polling the camera every few seconds and updating
+/// the tray: person icon while the camera is active, `countdown` text while
+/// not. Used instead of a plain sleep while a started event is in progress.
+pub fn watch_camera_until(deadline: Instant, countdown: &str) {
+    loop {
+        if camera::camera_active() {
+            tray::show_person();
+        } else {
+            tray::set_title(countdown);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        sleep(remaining.min(CAMERA_POLL_INTERVAL));
+    }
+}
 
 /// What the background loop should do after updating the tray countdown.
 #[derive(Debug)]
@@ -29,38 +51,52 @@ pub struct StepResult {
     pub next: StepNext,
 }
 
-/// Fetches the calendar and returns the next event with a video link.
-/// Fetch errors are surfaced as notifications and the previous event is kept,
-/// so a transient network blip doesn't lose an imminent alert.
-pub fn find_next_event(
-    ics_url: &str,
-    first_run: bool,
-    previous_next_event: Option<ical::NextEvent>,
-) -> Option<ical::NextEvent> {
+/// Fetches the calendar and returns the relevant events (next + in-progress).
+/// Fetch errors are surfaced as notifications and the previous events are
+/// kept, so a transient network blip doesn't lose an imminent alert.
+pub fn find_events(ics_url: &str, previous_events: ical::CalendarEvents) -> ical::CalendarEvents {
     let start = Instant::now();
-    let request_result = ical::get_next_event(ics_url, first_run);
+    let request_result = ical::get_events(ics_url);
     let request_duration = start.elapsed();
     match request_result {
-        Ok(event) => Some(event),
+        Ok(events) => {
+            if events.next.is_none() {
+                info!("Got calendar in {request_duration:?}, No upcoming calls with video links");
+            }
+            events
+        }
         Err(ical::CalendarError::HttpStatus(err)) => {
             error!("Got calendar in {request_duration:?}, HTTP error fetching calendar: {err}");
             notifications::send("Next Call", Some("HTTP error fetching calendar"), &err, None);
-            previous_next_event
+            previous_events
         }
         Err(ical::CalendarError::InvalidFormat(err)) => {
             error!("Got calendar in {request_duration:?}, Invalid iCal format: {err}");
             notifications::send("Next Call", Some("Invalid ical response"), &err, None);
-            previous_next_event
+            previous_events
         }
         Err(ical::CalendarError::NetworkError(err)) => {
             warn!("Got calendar in {request_duration:?}, Network error fetching calendar: {err}");
             notifications::send("Next Call", Some("Network error fetching calendar"), &err, None);
-            previous_next_event
+            previous_events
         }
-        Err(ical::CalendarError::NoUpcomingEvents) => {
-            info!("Got calendar in {request_duration:?}, No upcoming calls with video links");
-            None
-        }
+    }
+}
+
+/// One-line summary of the calendar state, shown at the top of the tray menu.
+/// Shows the in-progress call only during its alert window (the first
+/// [`ical::NEXT_MAX_AGE_MINUTES`]); after that the next upcoming call is more
+/// useful, even while still on the current one.
+pub fn status_line(events: &ical::CalendarEvents) -> String {
+    let local_start = |e: &NextEvent| e.start_time.with_timezone(&chrono::Local).format("%H:%M");
+    if let Some(ref event) = events.in_progress
+        && Utc::now().signed_duration_since(event.start_time).num_minutes() <= ical::NEXT_MAX_AGE_MINUTES
+    {
+        format!("In progress: {} (started {})", event.summary, local_start(event))
+    } else if let Some(ref event) = events.next {
+        format!("Next: {} at {}", event.summary, local_start(event))
+    } else {
+        "No upcoming calls".to_string()
     }
 }
 
@@ -125,9 +161,22 @@ pub fn event_started(event: NextEvent, eleven_labs_key: Option<&str>) -> AnyhowR
             // camera active, stop
             return Ok(());
         }
-        // sleep until the start of the next minute
+        // sleep until the start of the next minute, polling the camera so
+        // that joining the call stops the alerts within seconds
         let until_min_end = Duration::from_secs(60 - Utc::now().second() as u64);
-        sleep(until_min_end);
+        let deadline = Instant::now() + until_min_end;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            sleep(remaining.min(CAMERA_POLL_INTERVAL));
+            if camera::camera_active() {
+                // user joined the call: show the person icon, stop alerting
+                tray::show_person();
+                return Ok(());
+            }
+        }
     }
 
     maybe_notify(&event, eleven_labs_key, false)?;
@@ -145,10 +194,11 @@ fn maybe_notify(event: &NextEvent, eleven_labs_key: Option<&str>, always_notify:
     );
     let minutes = since_start.as_secs() as f32 / 60.0;
 
+    // Every reminder after the start alert ends with a call to action.
     let started_description: Cow<'static, str> = if minutes < 1.0 {
         "has started".into()
     } else {
-        format!("started {minutes:.0} minutes ago").into()
+        format!("started {minutes:.0} minutes ago, join it now!").into()
     };
 
     if !camera_active || always_notify {
