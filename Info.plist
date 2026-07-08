@@ -14,9 +14,13 @@
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0.0</string>
+    <!-- UNNotificationInterruptionLevel (notifications.m) requires macOS 12. -->
     <key>LSMinimumSystemVersion</key>
-    <string>10.15</string>
-    <key>NSUserNotificationAlertStyle</key>
-    <string>alert</string>
+    <string>12.0</string>
+    <!-- Agent app: no Dock icon, menu bar only. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
 </dict>
 </plist>

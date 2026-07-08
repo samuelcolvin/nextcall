@@ -1,27 +1,18 @@
 mod camera;
 mod config;
 mod ical;
-mod icon;
 mod logic;
 mod notifications;
 mod say;
+mod tray;
 
 use anyhow::Result as AnyhowResult;
-use std::borrow::Cow;
 use std::fs::OpenOptions;
-use std::sync::mpsc;
-use std::sync::mpsc::Sender;
 use std::thread::sleep;
-use std::time::Duration;
-use std::time::Instant;
 use tracing::{error, info};
 use tracing_subscriber::fmt::time::LocalTime;
-use tray_icon::{
-    TrayIconBuilder,
-    menu::{Menu, MenuEvent, MenuItem},
-};
-use winit::event_loop::{ControlFlow, EventLoopBuilder};
 
+/// Sets up tracing to both `~/nextcall.log` (truncated on startup) and stderr.
 fn init_logging() -> AnyhowResult<()> {
     // Expand home directory
     let home = config::home()?;
@@ -66,6 +57,13 @@ fn init_logging() -> AnyhowResult<()> {
     Ok(())
 }
 
+/// Logs a fatal error, surfaces it as a notification, and exits.
+fn fatal(subtitle: &str, message: &str) -> ! {
+    error!("Fatal error: {message}");
+    notifications::send("NextCall Configuration", Some(subtitle), message, None);
+    std::process::exit(1);
+}
+
 fn main() {
     if let Err(e) = init_logging() {
         eprintln!("Failed to initialize logging: {}", e);
@@ -74,77 +72,38 @@ fn main() {
     info!("NextCall starting up");
 
     notifications::startup();
-    if let Err(err) = run_ui() {
-        error!("Fatal error: {}", err);
-        notifications::send("NextCall Configuration", Some("ERROR"), &err.to_string(), None);
-        std::process::exit(1);
-    }
-}
 
-fn run_ui() -> AnyhowResult<()> {
-    let event_loop = EventLoopBuilder::new().build()?;
-
-    let icon = icon::create_icon_infinity();
-
-    let menu = Menu::new();
-
-    let quit_item = MenuItem::new("Quit Nextcall", true, None);
-    menu.append(&quit_item)?;
-
-    // Create tray icon
-    let tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_icon(icon.clone())
-        .build()?;
-
-    let menu_channel = MenuEvent::receiver();
-
-    let Some(config) = config::get_config()? else {
-        error!("Configuration file nextcall.toml not found in current directory or home directory");
-        notifications::send(
-            "NextCall Configuration",
-            Some("WARNING: nextcall.toml not found"),
-            "Create ~/nextcall.toml to configure Nextcall",
-            None,
-        );
-        std::process::exit(1);
+    let config = match config::get_config() {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            fatal(
+                "WARNING: nextcall.toml not found",
+                "Create ~/nextcall.toml to configure Nextcall",
+            );
+        }
+        Err(err) => fatal("ERROR", &err.to_string()),
     };
 
     info!("Configuration loaded successfully from {:?}", config);
 
-    // Channel for receiving icon updates from background thread
-    let (icon_tx, icon_rx) = mpsc::channel::<Cow<'static, str>>();
-
-    let icon_tx_clone = icon_tx.clone();
+    // Calendar polling and alerting run off the main thread so the AppKit run
+    // loop below is never blocked by network requests.
     std::thread::spawn(move || {
-        background(config, icon_tx_clone).unwrap();
+        if let Err(err) = background(config) {
+            fatal("ERROR", &err.to_string());
+        }
     });
 
-    // Run event loop
-    event_loop.run(move |_event, event_loop_window_target| {
-        // Use dynamic check interval based on upcoming events
-        event_loop_window_target.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(10)));
-
-        // Check for menu events
-        if let Ok(event) = menu_channel.try_recv() {
-            if event.id == quit_item.id() {
-                event_loop_window_target.exit();
-            }
-        }
-
-        // Check for icon updates from background thread
-        if let Ok(new_icon) = icon_rx.try_recv() {
-            tray_icon
-                .set_icon(Some(icon::create_icon_with_text(&new_icon)))
-                .unwrap();
-        }
-    })?;
-    Ok(())
+    // Blocks forever running the menu bar app; "Quit" terminates the process.
+    tray::run()
 }
 
-fn background(config: config::Config, icon_tx: Sender<Cow<'static, str>>) -> AnyhowResult<()> {
+/// Endless loop: find the next event, update the tray countdown, sleep until
+/// the next interesting moment, and run the alert sequence when a call starts.
+fn background(config: config::Config) -> AnyhowResult<()> {
     let mut first_run = true;
     let mut next_event_opt: Option<ical::NextEvent> = None;
+
     loop {
         next_event_opt = logic::find_next_event(&config.ical_url, first_run, next_event_opt);
         first_run = false;
@@ -154,14 +113,14 @@ fn background(config: config::Config, icon_tx: Sender<Cow<'static, str>>) -> Any
         };
 
         let result = logic::calc_sleep(next_event)?;
-        let _ = icon_tx.send(result.icon_text);
+        tray::set_title(&result.icon_text);
 
         match result.next {
             logic::StepNext::Sleep(duration) => {
                 sleep(duration);
             }
             logic::StepNext::EventStarted(event) => {
-                logic::event_started(event, config.eleven_labs_key.as_deref(), &icon_tx)?;
+                logic::event_started(event, config.eleven_labs_key.as_deref())?;
             }
         };
     }

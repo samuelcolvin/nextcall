@@ -61,10 +61,10 @@ pub fn get_next_event(url: &str, first_run: bool) -> Result<NextEvent, CalendarE
                     let Some(video_link) = get_video_link(&event) else {
                         continue;
                     };
-                    if let Ok(ref current_next_event) = next_event {
-                        if start_time > current_next_event.start_time {
-                            continue;
-                        }
+                    if let Ok(ref current_next_event) = next_event
+                        && start_time > current_next_event.start_time
+                    {
+                        continue;
                     }
                     next_event = Ok(NextEvent {
                         start_time,
@@ -153,24 +153,24 @@ pub fn get_event_summary(event: &IcalEvent) -> Option<String> {
 
 pub fn get_video_link(event: &IcalEvent) -> Option<String> {
     // Check for X-GOOGLE-CONFERENCE property (Google Calendar)
-    if let Some(url) = get_property(event, "X-GOOGLE-CONFERENCE") {
-        if url.starts_with("http") {
-            return Some(url);
-        }
+    if let Some(url) = get_property(event, "X-GOOGLE-CONFERENCE")
+        && url.starts_with("http")
+    {
+        return Some(url);
     }
 
     // Check for URL property (Zoom, Teams, etc.)
-    if let Some(url) = get_property(event, "URL") {
-        if url.starts_with("http") {
-            return Some(url);
-        }
+    if let Some(url) = get_property(event, "URL")
+        && url.starts_with("http")
+    {
+        return Some(url);
     }
 
     // Check location field
-    if let Some(location) = get_property(event, "LOCATION") {
-        if location.starts_with("http") {
-            return Some(location);
-        }
+    if let Some(location) = get_property(event, "LOCATION")
+        && location.starts_with("http")
+    {
+        return Some(location);
     }
 
     // Check description for meeting links

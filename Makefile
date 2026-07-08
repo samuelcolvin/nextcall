@@ -8,6 +8,10 @@ export CARGO_TERM_COLOR=$(shell (test -t 0 && echo "always") || echo "auto")
 build:
 	./build.sh
 
+.PHONY: run  ## Build and run the app in the foreground (logs to terminal, Ctrl-C to quit)
+run:
+	./run.sh
+
 .PHONY: format  ## Auto-format rust and python source files
 format:
 	cargo fmt

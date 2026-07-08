@@ -1,0 +1,5 @@
+# Pin one deployment target for both rustc and the ObjC helpers compiled by
+# build.rs (cc otherwise defaults to the host SDK version). Must match
+# LSMinimumSystemVersion in Info.plist.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "12.0"

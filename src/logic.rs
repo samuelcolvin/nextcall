@@ -1,13 +1,12 @@
 use crate::{
     camera,
     ical::{self, NextEvent},
-    notifications, say,
+    notifications, say, tray,
 };
 use anyhow::Result as AnyhowResult;
 use chrono::{TimeDelta, Timelike, Utc};
 use std::{
     borrow::Cow,
-    sync::mpsc::Sender,
     thread::sleep,
     time::{Duration, Instant},
 };
@@ -16,32 +15,33 @@ use tracing::{error, info, warn};
 // Default check interval: 3 minutes
 const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(180);
 
+/// What the background loop should do after updating the tray countdown.
 #[derive(Debug)]
 pub enum StepNext {
     Sleep(Duration),
     EventStarted(ical::NextEvent),
 }
 
+/// Outcome of [`calc_sleep`]: the tray text to show and the next action.
 #[derive(Debug)]
 pub struct StepResult {
     pub icon_text: Cow<'static, str>,
     pub next: StepNext,
 }
 
+/// Fetches the calendar and returns the next event with a video link.
+/// Fetch errors are surfaced as notifications and the previous event is kept,
+/// so a transient network blip doesn't lose an imminent alert.
 pub fn find_next_event(
     ics_url: &str,
     first_run: bool,
     previous_next_event: Option<ical::NextEvent>,
 ) -> Option<ical::NextEvent> {
-    info!("Checking calendar for upcoming events");
     let start = Instant::now();
     let request_result = ical::get_next_event(ics_url, first_run);
     let request_duration = start.elapsed();
     match request_result {
-        Ok(event) => {
-            info!("Got calendar in {request_duration:?}, next call {:?}", event.summary);
-            Some(event)
-        }
+        Ok(event) => Some(event),
         Err(ical::CalendarError::HttpStatus(err)) => {
             error!("Got calendar in {request_duration:?}, HTTP error fetching calendar: {err}");
             notifications::send("Next Call", Some("HTTP error fetching calendar"), &err, None);
@@ -64,6 +64,9 @@ pub fn find_next_event(
     }
 }
 
+/// Decides the tray countdown text and how long to sleep before re-checking:
+/// "..." when >60 min away, minutes remaining when closer, and
+/// `EventStarted` once the start time has passed.
 pub fn calc_sleep(next_event: &ical::NextEvent) -> AnyhowResult<StepResult> {
     let now = Utc::now();
     let until_start = next_event.start_time.signed_duration_since(now);
@@ -104,30 +107,36 @@ pub fn calc_sleep(next_event: &ical::NextEvent) -> AnyhowResult<StepResult> {
     })
 }
 
-pub fn event_started(
-    event: NextEvent,
-    eleven_labs_key: Option<&str>,
-    icon_tx: &Sender<Cow<'static, str>>,
-) -> AnyhowResult<()> {
+/// Runs the alert sequence for a started event: notify immediately, then show
+/// a negative minutes countdown in the tray, re-notifying at +2 and +5 min.
+/// Stops early once the camera is active (the user has joined the call).
+pub fn event_started(event: NextEvent, eleven_labs_key: Option<&str>) -> AnyhowResult<()> {
     info!("Event {:?} has started", event.summary);
 
-    maybe_notify(&event, eleven_labs_key, true)?;
+    if maybe_notify(&event, eleven_labs_key, true)? {
+        // camera active, stop
+        return Ok(());
+    }
 
     for i in 0..5 {
         let minutes = Utc::now().signed_duration_since(event.start_time).to_std()?.as_secs() as f32 / 60.0;
-        icon_tx.send(format!("-{minutes:.0}").into())?;
-        if i == 2 {
-            maybe_notify(&event, eleven_labs_key, false)?
+        tray::set_title(&format!("-{minutes:.0}"));
+        if i == 2 && maybe_notify(&event, eleven_labs_key, false)? {
+            // camera active, stop
+            return Ok(());
         }
-        // sleep until the top of the next minute
+        // sleep until the start of the next minute
         let until_min_end = Duration::from_secs(60 - Utc::now().second() as u64);
         sleep(until_min_end);
     }
 
-    maybe_notify(&event, eleven_labs_key, false)
+    maybe_notify(&event, eleven_labs_key, false)?;
+    Ok(())
 }
 
-fn maybe_notify(event: &NextEvent, eleven_labs_key: Option<&str>, always_notify: bool) -> AnyhowResult<()> {
+/// Sends a notification and speaks an announcement unless the camera is
+/// already active (i.e. the user is on the call). Returns whether it was.
+fn maybe_notify(event: &NextEvent, eleven_labs_key: Option<&str>, always_notify: bool) -> AnyhowResult<bool> {
     let camera_active = camera::camera_active();
     let since_start = Utc::now().signed_duration_since(event.start_time).to_std()?;
     info!(
@@ -135,32 +144,26 @@ fn maybe_notify(event: &NextEvent, eleven_labs_key: Option<&str>, always_notify:
         event.summary, since_start, camera_active
     );
     let minutes = since_start.as_secs() as f32 / 60.0;
+
+    let started_description: Cow<'static, str> = if minutes < 1.0 {
+        "has started".into()
+    } else {
+        format!("started {minutes:.0} minutes ago").into()
+    };
+
     if !camera_active || always_notify {
         notifications::send(
             "Nextcall",
-            Some(&format!("Call Started {}", time_since_description(minutes))),
+            Some(&format!("Call {started_description}")),
             &event.summary,
             Some(&event.video_link),
         );
     }
     if !camera_active {
-        let message = format!(
-            "Your call {:?} started {}{}",
-            sayevent_summary(event),
-            time_since_description(minutes),
-            if minutes > 1.0 { ", join it now!" } else { "" }
-        );
+        let message = format!("Your call {:?} {}", sayevent_summary(event), started_description);
         let _ = say::say(&message, eleven_labs_key);
     }
-    Ok(())
-}
-
-fn time_since_description(minutes: f32) -> Cow<'static, str> {
-    if minutes < 1.0 {
-        "just now".into()
-    } else {
-        format!("{minutes:.0} minutes ago").into()
-    }
+    Ok(camera_active)
 }
 
 /// Left strip `call` and `-` from the event summary

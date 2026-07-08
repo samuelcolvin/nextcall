@@ -6,6 +6,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NextCall is a macOS menu bar application written in Rust that monitors your calendar for upcoming video calls and provides timely notifications. It displays a countdown in the system tray and sends alerts when meetings are about to start or are already in progress. Notifications use both system Notifications and audio announcement.
 
+### Docstrings and comments.
+
+IMPORTANT: every struct, enum and function should have an concise docstring to
+explain what it does and why; and any considerations or potential foot-guns of using that type.
+
+The only exception is trait implementation methods where a docstring is not necessary if the method is self-explanatory.
+
+It's important that docstrings cover the motivation and primary usage patterns of code, not just the simple "what it does".
+
+Similarly, you should add comments to code, especially if the code is complex or esoteric.
+
+Comments and field docstrings should almost never be more than 3 lines, mostly 1 line. Function and struct docstrings should be concise, generally <= 5 lines.
+
+Only add examples to docstrings of public functions and structs, examples should be <=8 lines, if the example is more, remove it.
+
+If you add example code to docstrings, it must be run in tests. NEVER add examples that are ignored.
+
+If you encounter a comment or docstring that's out of date - you MUST update it to be correct.
+
+Similarly, if you encounter code that has no docstrings or comments, or they are minimal, you should add more detail.
+
+Always use single back-ticks in python docstrings - they should be markdown, not rst!
+
+NOTE: COMMENTS AND DOCSTRINGS ARE EXTREMELY IMPORTANT TO THE LONG TERM HEALTH OF THE PROJECT.
+
+NOTE: COMMENTS AND DOCSTRINGS SHOULD BE CONCISE - EXCESSIVELY VERBOSE DOCSTRINGS MAKE THE CODE HARDER TO READ AND MAINTAIN!
+
+
 ## Configuration
 
 The app requires a `nextcall.toml` configuration file, which should be placed either in:
@@ -35,23 +63,19 @@ make lint
 
 ## Architecture
 
-### Main Event Loop (`src/main.rs`)
-The application uses `winit` for event loop management and `tray-icon` for the menu bar icon. It runs a non-blocking architecture where:
-- Every 10 seconds, the main loop spawns a background thread to check for calendar updates
-- Icon updates and event state are communicated back to the main thread via channels (`mpsc`)
-- This prevents the UI from freezing during network operations
+All macOS interaction is implemented in Objective-C (`src/native/*.m`), exposed to Rust as plain C functions and compiled into the cargo build by `build.rs` via the `cc` crate. Only C types (UTF-8 strings, bools) cross the boundary — see `rust-objc.md` for the pattern. Rust modules (`notifications.rs`, `camera.rs`, `tray.rs`) are thin FFI wrappers.
+
+### Main Entry Point (`src/main.rs`)
+The main thread runs the AppKit event loop (`tray::run`, never returns; the "Quit" menu item terminates the process). Before that it:
+- Loads config and registers for notifications
+- Spawns a background thread that polls the calendar, updates the tray title (thread-safe, dispatched to the main queue in ObjC), and self-paces its sleeps based on how far away the next event is
 
 ### Core Business Logic (`src/logic.rs`)
-The `step()` function is the heart of the application, called every 10 seconds:
-1. Fetches and parses the iCal feed
-2. Filters events with video links that are within the alert window (-10 to +∞ minutes from start)
-3. Updates the tray icon based on time until next meeting:
-   - "..." for events more than 60 minutes away or no events
-   - Minutes countdown (e.g., "5", "15") for events within 60 minutes
-   - "0" (enlarged) when event has started
-4. Manages notification state through `ActiveEvent` struct to prevent duplicate alerts
-5. Sends notifications at: event start, 2 minutes after start, and 5 minutes after start
-6. Checks camera status before sending notifications to avoid interrupting active calls
+Drives the background loop:
+1. `find_next_event` fetches/parses the iCal feed and keeps the previous event on transient errors
+2. `calc_sleep` picks the tray text — "..." when >60 minutes away, minutes countdown when closer — and how long to sleep before re-checking
+3. `event_started` runs the alert sequence: notifications at event start, +2 and +5 minutes, with a negative minutes countdown in the tray
+4. Camera status is checked before alerts to avoid interrupting active calls
 
 ### Calendar Integration (`src/ical.rs`)
 - Downloads and parses iCal feeds using the `ical` crate
@@ -59,16 +83,15 @@ The `step()` function is the heart of the application, called every 10 seconds:
 - Supports Zoom, Google Meet, and Microsoft Teams URLs
 - Returns events sorted by start time
 
-### Notifications (`src/notifications.rs`)
-Low-level macOS UserNotifications framework integration using `objc2`:
-- Implements a custom delegate (`NotificationDelegate`) to handle notification interactions
-- Supports clickable "Join" buttons on notifications that open video links
+### Notifications (`src/notifications.rs` + `src/native/notifications.m`)
+macOS UserNotifications framework integration in Objective-C:
+- `NCNotificationDelegate` handles notification interactions; clicks (including the "Join" button) open the video link via `NSWorkspace`
 - Uses "Blow.aiff" system sound with active interruption level
-- Requires notification permissions on first run
+- Requires notification permissions on first run, and only works from a signed `.app` bundle with a `CFBundleIdentifier`
 
-### Camera Detection (`src/camera.rs`)
-Uses macOS AVFoundation and CoreMediaIO frameworks to detect if the camera is active:
-- Checks `kCMIODevicePropertyDeviceIsRunningSomewhere` property on all video devices
+### Camera Detection (`src/camera.rs` + `src/native/camera.m`)
+Uses the CoreMediaIO hardware C API to detect if the camera is active:
+- Enumerates CMIO devices and checks `kCMIODevicePropertyDeviceIsRunningSomewhere` on each
 - Prevents notifications from interrupting if camera is already in use
 
 ### Text-to-Speech (`src/say.rs`)
@@ -76,11 +99,11 @@ Dual implementation:
 - ElevenLabs API (if `eleven_labs_key` is configured) - uses `rodio` for audio playback
 - macOS built-in `say` command with "Moira" voice as fallback
 
-### Icon Generation (`src/icon.rs`)
-Dynamically generates tray icons with embedded text using `image` and `imageproc` crates. Uses DejaVu Sans font included in `assets/`.
+### Tray Icon (`src/tray.rs` + `src/native/tray.m`)
+An AppKit `NSStatusItem` whose title is the countdown text — no image rendering involved. `tray_set_title` is thread-safe (dispatches to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns.
 
 ### Build Configuration (`build.rs`)
-Links AVFoundation framework required for camera detection.
+Compiles `src/native/*.m` with the `cc` crate (ARC enabled) and links the required frameworks: Foundation, AppKit, UserNotifications, CoreMediaIO.
 
 ## Platform-Specific Notes
 
@@ -91,7 +114,6 @@ Links AVFoundation framework required for camera detection.
 
 ## Development Patterns
 
-- Heavy use of `unsafe` code for Objective-C interop via `objc2` crate
+- OS interaction lives in Objective-C (`src/native/*.m`); Rust calls it through a small C API (`unsafe extern "C"` declarations in the wrapper modules). Keep the boundary C-only: no ObjC types, no Rust types, just UTF-8 strings and scalars
 - Error handling uses `anyhow::Result` for application errors
 - Custom error enum (`CalendarError`) for iCal-specific errors
-- Notification state tracking prevents alert spam using `ActiveEvent` with per-event flags
