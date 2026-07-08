@@ -20,7 +20,6 @@ format:
 lint:
 	cargo fmt
 	cargo clippy -- -D warnings
-	cargo check
 
 .PHONY: all  ## Run the standard set of checks performed in CI
 all: format build-dev lint
