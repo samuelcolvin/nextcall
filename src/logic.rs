@@ -28,10 +28,11 @@ pub enum TrayIcon {
 }
 
 impl TrayIcon {
+    /// Applies this icon to the menu bar (side-effectful; called by main).
     pub fn show(&self) {
         match self {
             Self::Person => super::tray::show_person(),
-            Self::Text(text) => super::tray::set_title(&text),
+            Self::Text(text) => super::tray::set_title(text),
             Self::Idle => super::tray::set_title("..."),
         }
     }

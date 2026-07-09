@@ -11,6 +11,7 @@ unsafe extern "C" {
     fn tray_set_title(title: *const c_char);
     fn tray_set_status(status: *const c_char);
     fn tray_show_person();
+    fn tray_set_log_path(path: *const c_char);
 }
 
 /// Creates the status item and runs the AppKit event loop. Never returns:
@@ -18,6 +19,14 @@ unsafe extern "C" {
 pub fn run() -> ! {
     unsafe { tray_run() }
     unreachable!("tray_run only returns when the app is terminating")
+}
+
+/// Tells the tray where this run's log file lives, so the menu's "View Log"
+/// item can open it. Call once at startup; until then the item does nothing.
+/// Thread-safe like [`set_title`].
+pub fn set_log_path(path: &str) {
+    let Ok(path) = CString::new(path) else { return };
+    unsafe { tray_set_log_path(path.as_ptr()) }
 }
 
 /// Shows a person icon instead of text, indicating the user is on the current

@@ -11,15 +11,22 @@ use chrono::{DateTime, TimeDelta, Utc};
 use std::fs::OpenOptions;
 use std::thread::sleep;
 use tracing::{error, info};
-use tracing_subscriber::fmt::time::LocalTime;
+use tracing_subscriber::fmt::time::ChronoLocal;
 
-/// Sets up tracing to both `~/nextcall.log` (truncated on startup) and stderr.
-fn init_logging() -> AnyhowResult<()> {
-    // Expand home directory
-    let home = config::home()?;
-    let log_path = format!("{}/nextcall.log", home);
+/// Log timestamp format: RFC 3339 local time at whole-second precision —
+/// chrono has no 1-digit fraction specifier, and microseconds are noise here.
+const LOG_TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%:z";
 
-    // Truncate/create the log file
+/// Sets up tracing to a per-process temp file and stderr, returning the log
+/// path so the tray menu's "View Log" item can open it. A fresh file per run
+/// (pid in the name) means old logs never get clobbered mid-read.
+fn init_logging() -> AnyhowResult<String> {
+    let log_path = std::env::temp_dir()
+        .join(format!("nextcall-{}.log", std::process::id()))
+        .to_string_lossy()
+        .into_owned();
+
+    // Create the file up front so "View Log" works before the first entry
     let _log_file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -31,21 +38,22 @@ fn init_logging() -> AnyhowResult<()> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
+    let writer_path = log_path.clone();
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(move || {
             OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&log_path)
+                .open(&writer_path)
                 .expect("Failed to open log file")
         })
-        .with_timer(LocalTime::rfc_3339())
+        .with_timer(ChronoLocal::new(LOG_TIME_FORMAT.to_owned()))
         .with_ansi(false)
         .with_target(false);
 
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
-        .with_timer(LocalTime::rfc_3339())
+        .with_timer(ChronoLocal::new(LOG_TIME_FORMAT.to_owned()))
         .with_ansi(true)
         .with_target(false);
 
@@ -55,7 +63,7 @@ fn init_logging() -> AnyhowResult<()> {
         .with(LevelFilter::INFO)
         .init();
 
-    Ok(())
+    Ok(log_path)
 }
 
 /// Logs a fatal error, surfaces it as a notification, and exits.
@@ -66,8 +74,9 @@ fn fatal(subtitle: &str, message: &str) -> ! {
 }
 
 fn main() {
-    if let Err(e) = init_logging() {
-        eprintln!("Failed to initialize logging: {}", e);
+    match init_logging() {
+        Ok(log_path) => tray::set_log_path(&log_path),
+        Err(e) => eprintln!("Failed to initialize logging: {}", e),
     }
 
     info!("NextCall starting up");
@@ -137,6 +146,7 @@ fn background(config: config::Config) -> AnyhowResult<()> {
 
         prev_tick = now;
         scheduled = now + TimeDelta::from_std(step.sleep)?;
+        info!("sleeping {:?} until {}", step.sleep, scheduled.format("%H:%M:%S"));
         // long leg of the sleep; zero when the next tick is <= FETCH_LEAD away
         sleep_until(scheduled - FETCH_LEAD);
     }

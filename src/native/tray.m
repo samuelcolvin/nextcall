@@ -5,6 +5,10 @@
 // Exposed to Rust as tray_run / tray_set_title (declared in src/tray.rs).
 #import <AppKit/AppKit.h>
 
+// This run's log file, set via tray_set_log_path; nil until then. Declared
+// before NCMenuActions because its openLog: action reads it.
+static NSString *gLogPath = nil;
+
 // Target for menu items with custom actions. NSMenuItem holds its target
 // weakly, so the static gMenuActions reference below keeps it alive.
 @interface NCMenuActions : NSObject
@@ -15,6 +19,14 @@
 // Opens the project repository in the default browser.
 - (void)openGitHub:(id)sender {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/samuelcolvin/nextcall"]];
+}
+
+// Opens this run's log file in the default .log viewer (same as `open <path>`).
+// No-op until Rust has set the path via tray_set_log_path.
+- (void)openLog:(id)sender {
+    if (gLogPath != nil) {
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:gLogPath]];
+    }
 }
 
 @end
@@ -48,6 +60,11 @@ void tray_run(void) {
                                                  keyEquivalent:@""];
         github.target = gMenuActions;
         [menu addItem:github];
+        NSMenuItem *viewLog = [[NSMenuItem alloc] initWithTitle:@"View Log"
+                                                         action:@selector(openLog:)
+                                                  keyEquivalent:@""];
+        viewLog.target = gMenuActions;
+        [menu addItem:viewLog];
         [menu addItem:[NSMenuItem separatorItem]];
         // nil target: the responder chain routes terminate: to NSApp.
         [menu addItemWithTitle:@"Quit Nextcall" action:@selector(terminate:) keyEquivalent:@""];
@@ -78,6 +95,17 @@ void tray_set_status(const char *status) {
         NSString *text = @(status);
         dispatch_async(dispatch_get_main_queue(), ^{
           gStatusMenuItem.title = text;
+        });
+    }
+}
+
+// Records the path opened by the "View Log" menu item. Thread-safe, same
+// main-queue rules as tray_set_title; called once from Rust at startup.
+void tray_set_log_path(const char *path) {
+    @autoreleasepool {
+        NSString *text = @(path);
+        dispatch_async(dispatch_get_main_queue(), ^{
+          gLogPath = text;
         });
     }
 }
