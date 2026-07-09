@@ -94,7 +94,7 @@ fn main() {
         Err(err) => fatal("ERROR", &err.to_string()),
     };
 
-    info!("Configuration loaded successfully from {:?}", config);
+    info!("Configuration loaded: {config}");
 
     // Calendar polling and alerting run off the main thread so the AppKit run
     // loop below is never blocked by network requests.
@@ -133,13 +133,13 @@ fn background(config: config::Config) -> AnyhowResult<()> {
         sleep_until(scheduled);
 
         let now = Utc::now();
-        // cache hit: re-selects the calendar windows at the tick itself, so
-        // in_call/next_call aren't up to a sleep-length stale
+        // cache hit: re-selects the calendar window at the tick itself, so
+        // next_call isn't up to a sleep-length stale
         let cal = feed.cal(now);
         let camera_active = camera::camera_active();
         let step = logic::step(&cal, now, prev_tick, camera_active);
         tray::set_status(&step.status);
-        step.icon.show();
+        tray::set_title(&step.title);
         if let Some((event, minutes)) = step.alert {
             logic::fire_alert(&event, minutes, camera_active, config.eleven_labs_key.as_deref());
         }

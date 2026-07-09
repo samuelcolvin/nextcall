@@ -2,7 +2,7 @@
 //! `src/native/tray.m` (AppKit `NSStatusItem`).
 //!
 //! The countdown is shown as plain text in the menu bar; the item's menu has
-//! a single "Quit" entry that terminates the process.
+//! a status line plus "About nextcall", "View Log" and "Quit" entries.
 
 use std::ffi::{CString, c_char};
 
@@ -10,7 +10,6 @@ unsafe extern "C" {
     fn tray_run();
     fn tray_set_title(title: *const c_char);
     fn tray_set_status(status: *const c_char);
-    fn tray_show_person();
     fn tray_set_log_path(path: *const c_char);
 }
 
@@ -29,12 +28,6 @@ pub fn set_log_path(path: &str) {
     unsafe { tray_set_log_path(path.as_ptr()) }
 }
 
-/// Shows a person icon instead of text, indicating the user is on the current
-/// call. Cleared by the next [`set_title`]. Thread-safe like [`set_title`].
-pub fn show_person() {
-    unsafe { tray_show_person() }
-}
-
 /// Updates the status line at the top of the tray menu (e.g. "Next: standup
 /// at 14:00"). Thread-safe like [`set_title`].
 pub fn set_status(status: &str) {
@@ -42,9 +35,8 @@ pub fn set_status(status: &str) {
     unsafe { tray_set_status(status.as_ptr()) }
 }
 
-/// Sets the menu bar text (e.g. "5", "-2", "..."), replacing a person icon if
-/// one is shown. Thread-safe: the update is dispatched to the main queue, and
-/// is queued if called before [`run`].
+/// Sets the menu bar text (e.g. "5", "-2", "..."). Thread-safe: the update is
+/// dispatched to the main queue, and is queued if called before [`run`].
 pub fn set_title(title: &str) {
     // Interior NULs can't occur in the countdown strings we generate; skip the
     // update rather than panicking if that ever changes.

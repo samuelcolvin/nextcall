@@ -21,12 +21,24 @@ pub struct NextEvent {
 /// What the rest of the app needs from the calendar right now.
 #[derive(Debug, Clone, Default)]
 pub struct Cal {
-    /// An event started within the last hour: a call is (probably) happening.
-    /// Combined with camera state for the tray person icon and poll cadence.
-    pub in_call: bool,
     /// Earliest event that is upcoming or started <10 min ago; drives the
     /// countdown, the status line and the alerts.
     pub next_call: Option<NextEvent>,
+}
+
+/// Human-readable one-liner for the log, e.g. `next call "standup" at 2026-07-09T09:00Z`.
+impl fmt::Display for Cal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.next_call {
+            Some(event) => write!(
+                f,
+                "next call {:?} at {}",
+                event.summary,
+                event.start_time.format("%Y-%m-%dT%H:%MZ")
+            ),
+            None => write!(f, "no upcoming call"),
+        }
+    }
 }
 
 /// Why a calendar fetch failed; [`CalendarFeed::get`] returns this alongside
@@ -64,9 +76,10 @@ impl fmt::Display for CalendarError {
 /// count as `next_call`, so alerts can fire (one per minute since start).
 pub const NEXT_MAX_AGE_MINUTES: i64 = 10;
 
-/// In-call window: an event that started within the last hour sets
-/// [`Cal::in_call`], showing the person icon for its (assumed ~1h) duration.
-const IN_PROGRESS_MAX_AGE_MINUTES: i64 = 60;
+/// Parse-time lookback: occurrences up to this old are kept as candidates.
+/// Generously exceeds [`NEXT_MAX_AGE_MINUTES`] plus the worst-case cache age,
+/// so per-tick selection never misses a recently started event.
+const LOOKBACK_MINUTES: i64 = 60;
 
 /// How many upcoming occurrences of a recurring event to consider. 2 covers
 /// the "one in progress + the next one upcoming" case (e.g. a daily standup).
@@ -79,8 +92,15 @@ const NEAR_EVENT_TTL: Duration = Duration::from_secs(60);
 /// Cache TTL otherwise; also how often a fetch failure is re-reported.
 const IDLE_TTL: Duration = Duration::from_secs(180);
 
+/// Slack on the expiry check: a cache expiring within this margin of a fetch
+/// attempt is refreshed now rather than a whole sleep later. Without it the
+/// TTL phase-slips against the tick cadence (expiry lands seconds after an
+/// attempt) and the effective fetch interval doubles. Covers main's
+/// FETCH_LEAD plus fetch latency and scheduling jitter.
+const EXPIRY_SLACK: Duration = Duration::from_secs(15);
+
 /// The calendar feed: owns the URL and an internal cache of expanded event
-/// occurrences, so the main loop can call [`CalendarFeed::get`] every tick
+/// occurrences, so the main loop can call [`CalendarFeed::fetch`] every tick
 /// (possibly every few seconds) while the network is hit at most once per TTL.
 pub struct CalendarFeed {
     url: String,
@@ -91,7 +111,7 @@ pub struct CalendarFeed {
 }
 
 impl CalendarFeed {
-    /// A feed whose cache is empty and already expired: the first [`Self::get`] fetches.
+    /// A feed whose cache is empty and already expired: the first [`Self::fetch`] fetches.
     pub fn new(url: String) -> Self {
         Self {
             url,
@@ -106,7 +126,7 @@ impl CalendarFeed {
     /// per tick. Read the resulting state with [`Self::cal`].
     pub fn fetch(&mut self, now: DateTime<Utc>) -> Option<CalendarError> {
         let fetch_start = Instant::now();
-        let should_fetch = fetch_start >= self.expires;
+        let should_fetch = fetch_start + EXPIRY_SLACK >= self.expires;
         if should_fetch {
             let mut fetch_error = None;
             match fetch_candidates(&self.url, now) {
@@ -120,7 +140,7 @@ impl CalendarFeed {
                 .is_some_and(|e| e.start_time.signed_duration_since(now) < TimeDelta::minutes(NEXT_MAX_AGE_MINUTES));
             self.expires = Instant::now() + if near_event { NEAR_EVENT_TTL } else { IDLE_TTL };
             if fetch_error.is_none() {
-                info!("fetched calendar in {:?}, {:?}", fetch_start.elapsed(), cal);
+                info!("fetched calendar in {:?}, {cal}", fetch_start.elapsed());
             }
             fetch_error
         } else {
@@ -128,30 +148,17 @@ impl CalendarFeed {
         }
     }
 
-    /// Pure window selection: which candidate is `next_call` and whether any call
-    /// is in progress, relative to `now`.
+    /// Pure window selection: `next_call` is the earliest candidate that is
+    /// upcoming or started within the last [`NEXT_MAX_AGE_MINUTES`].
     pub fn cal(&self, now: DateTime<Utc>) -> Cal {
-        let mut cal = Cal::default();
-        for candidate in &self.candidates {
-            // positive = the candidate started that long ago
-            let age = now.signed_duration_since(candidate.start_time);
-            if age.num_minutes() > IN_PROGRESS_MAX_AGE_MINUTES {
-                continue;
-            }
-            // next_call: the earliest upcoming or recently started occurrence
-            if age.num_minutes() <= NEXT_MAX_AGE_MINUTES
-                && cal
-                    .next_call
-                    .as_ref()
-                    .is_none_or(|n| candidate.start_time < n.start_time)
-            {
-                cal.next_call = Some(candidate.clone());
-            }
-            if age.num_seconds() >= 0 {
-                cal.in_call = true;
-            }
-        }
-        cal
+        let next_call = self
+            .candidates
+            .iter()
+            // positive duration = the candidate started that long ago
+            .filter(|c| now.signed_duration_since(c.start_time).num_minutes() <= NEXT_MAX_AGE_MINUTES)
+            .min_by_key(|c| c.start_time)
+            .cloned();
+        Cal { next_call }
     }
 }
 
@@ -175,7 +182,7 @@ fn fetch_candidates(url: &str, now: DateTime<Utc>) -> Result<Vec<NextEvent>, Cal
 /// Parses raw iCal bytes into candidate occurrences: every event occurrence
 /// with a video link from `now - 60min` onward (RRULE-expanded, with
 /// overridden and cancelled instances removed). No window selection here -
-/// that happens per tick in [`select`].
+/// that happens per tick in [`CalendarFeed::cal`].
 fn parse_candidates(content: &[u8], now: DateTime<Utc>) -> Result<Vec<NextEvent>, CalendarError> {
     let parser = IcalParser::new(BufReader::new(content));
 
@@ -213,7 +220,7 @@ fn parse_candidates(content: &[u8], now: DateTime<Utc>) -> Result<Vec<NextEvent>
         };
         for start_time in occurrences(event, now, &overridden) {
             // positive = the occurrence started that long ago
-            if now.signed_duration_since(start_time).num_minutes() > IN_PROGRESS_MAX_AGE_MINUTES {
+            if now.signed_duration_since(start_time).num_minutes() > LOOKBACK_MINUTES {
                 continue;
             }
             candidates.push(NextEvent {
@@ -271,7 +278,7 @@ fn expand_rrule(event: &IcalEvent, now: DateTime<Utc>) -> Vec<DateTime<Utc>> {
         }
     };
 
-    let window_start = (now - TimeDelta::minutes(IN_PROGRESS_MAX_AGE_MINUTES)).with_timezone(&rrule::Tz::UTC);
+    let window_start = (now - TimeDelta::minutes(LOOKBACK_MINUTES)).with_timezone(&rrule::Tz::UTC);
     let result = rrule_set.after(window_start).all(RECURRING_OCCURRENCE_LIMIT);
     result.dates.into_iter().map(|d| d.with_timezone(&Utc)).collect()
 }
@@ -445,14 +452,12 @@ mod tests {
             "BEGIN:VEVENT\nDTSTART:20260709T100000Z\nSUMMARY:one-off\n{LINK}END:VEVENT\n"
         ));
         assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 9, 10, 0));
-        assert!(!cal.in_call);
     }
 
     #[test]
     fn event_without_video_link_ignored() {
         let cal = parse("BEGIN:VEVENT\nDTSTART:20260709T100000Z\nSUMMARY:no link\nEND:VEVENT\n");
         assert!(cal.next_call.is_none());
-        assert!(!cal.in_call);
     }
 
     #[test]
@@ -464,7 +469,6 @@ mod tests {
         let next = cal.next_call.unwrap();
         assert_eq!(next.start_time, utc(2026, 7, 9, 9, 0));
         assert_eq!(next.summary, "standup");
-        assert!(cal.in_call);
     }
 
     #[test]
@@ -475,18 +479,16 @@ mod tests {
             "BEGIN:VEVENT\nDTSTART;TZID=Europe/Amsterdam:20260708T110000\nRRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR\nSUMMARY:eu standup\nUID:b@x\n{LINK}END:VEVENT\n"
         ));
         assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 9, 9, 0));
-        assert!(cal.in_call);
     }
 
     #[test]
-    fn old_recurring_event_out_of_both_windows() {
-        // started 68 minutes ago: too old for either window, so the next
-        // occurrence (tomorrow) is surfaced instead
+    fn old_recurring_occurrence_skipped() {
+        // started 68 minutes ago: too old for the next_call window, so the
+        // next occurrence (tomorrow) is surfaced instead
         let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART;TZID=Europe/Amsterdam:20260708T100000\nRRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR\nSUMMARY:eu standup\nUID:b@x\n{LINK}END:VEVENT\n"
         ));
         assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 10, 8, 0));
-        assert!(!cal.in_call);
     }
 
     #[test]
@@ -496,7 +498,6 @@ mod tests {
         ));
         // today's occurrence removed; next is tomorrow's
         assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 10, 9, 0));
-        assert!(!cal.in_call);
     }
 
     #[test]
@@ -508,7 +509,6 @@ mod tests {
         ));
         // the generated 09:00 occurrence is suppressed; the moved instance wins
         assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 9, 14, 0));
-        assert!(!cal.in_call);
     }
 
     #[test]
@@ -520,14 +520,13 @@ mod tests {
     }
 
     #[test]
-    fn in_call_and_next_call_tracked_separately() {
+    fn started_event_ages_out_in_favour_of_later_one() {
         // meeting started 30 min ago plus one later today
         let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART:20260709T083800Z\nSUMMARY:current\n{LINK}END:VEVENT\n\
              BEGIN:VEVENT\nDTSTART:20260709T150000Z\nSUMMARY:later\n{LINK}END:VEVENT\n"
         ));
         assert_eq!(cal.next_call.unwrap().summary, "later");
-        assert!(cal.in_call);
     }
 
     #[test]
@@ -538,26 +537,10 @@ mod tests {
         ));
         assert_eq!(cal.next_call.unwrap().summary, "ten");
 
-        // started 11 minutes ago: no longer next_call, but still in_call
+        // started 11 minutes ago: no longer next_call
         let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART:20260709T085700Z\nSUMMARY:eleven\n{LINK}END:VEVENT\n"
         ));
         assert!(cal.next_call.is_none());
-        assert!(cal.in_call);
-    }
-
-    #[test]
-    fn in_call_window_boundary() {
-        // started exactly 60 minutes ago: still in_call
-        let cal = parse(&format!(
-            "BEGIN:VEVENT\nDTSTART:20260709T080800Z\nSUMMARY:hour\n{LINK}END:VEVENT\n"
-        ));
-        assert!(cal.in_call);
-
-        // started 61 minutes ago: call assumed over
-        let cal = parse(&format!(
-            "BEGIN:VEVENT\nDTSTART:20260709T080700Z\nSUMMARY:over\n{LINK}END:VEVENT\n"
-        ));
-        assert!(!cal.in_call);
     }
 }

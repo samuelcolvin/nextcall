@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 
@@ -7,6 +8,18 @@ use std::path::PathBuf;
 pub struct Config {
     pub eleven_labs_key: Option<String>,
     pub ical_url: String,
+}
+
+/// Log-safe rendering: the API key is truncated to its first 5 characters so
+/// pasting a log never leaks the full secret. Prefer this over `Debug` in logs.
+impl fmt::Display for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ical_url: {}, eleven_labs_key: ", self.ical_url)?;
+        match &self.eleven_labs_key {
+            Some(key) => write!(f, "{}…", key.chars().take(5).collect::<String>()),
+            None => write!(f, "unset"),
+        }
+    }
 }
 
 pub fn home() -> Result<String> {

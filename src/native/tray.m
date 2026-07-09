@@ -74,15 +74,14 @@ void tray_run(void) {
     }
 }
 
-// Updates the status item text (clearing any icon set by tray_show_person).
-// Thread-safe: hops to the main queue, so it may be called from Rust worker
-// threads (and before tray_run - the update is applied once the loop starts).
+// Updates the status item text. Thread-safe: hops to the main queue, so it
+// may be called from Rust worker threads (and before tray_run - the update is
+// applied once the loop starts).
 void tray_set_title(const char *title) {
     @autoreleasepool {
         // Copy to NSString now: the char* is only valid for this call.
         NSString *text = @(title);
         dispatch_async(dispatch_get_main_queue(), ^{
-          gStatusItem.button.image = nil;
           gStatusItem.button.title = text;
         });
     }
@@ -110,14 +109,3 @@ void tray_set_log_path(const char *path) {
     }
 }
 
-// Shows a person symbol instead of the countdown text, indicating the user is
-// on the current call. Cleared by the next tray_set_title. Thread-safe, same
-// main-queue rules as tray_set_title.
-void tray_show_person(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      NSImage *icon = [NSImage imageWithSystemSymbolName:@"person.fill" accessibilityDescription:@"On a call"];
-      icon.template = YES;  // adapts to light/dark menu bar
-      gStatusItem.button.title = @"";
-      gStatusItem.button.image = icon;
-    });
-}
