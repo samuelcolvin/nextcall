@@ -18,17 +18,29 @@ const CAMERA_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// What the tray should show this tick.
 #[derive(Debug, PartialEq)]
-pub enum Display {
-    /// Countdown / idle text (e.g. "5", "-2", "...").
-    Text(Cow<'static, str>),
+pub enum TrayIcon {
+    /// Countdown text: minutes until the next call ("5") or since its start ("-2").
+    Text(String),
     /// Person icon: the user is on a call (camera active during one).
     Person,
+    /// Nothing within the countdown hour ("...").
+    Idle,
+}
+
+impl TrayIcon {
+    pub fn show(&self) {
+        match self {
+            Self::Person => super::tray::show_person(),
+            Self::Text(text) => super::tray::set_title(&text),
+            Self::Idle => super::tray::set_title("..."),
+        }
+    }
 }
 
 /// The outcome of one [`step`]: everything the main loop must apply.
 #[derive(Debug)]
 pub struct Step {
-    pub display: Display,
+    pub icon: TrayIcon,
     /// Text for the status line at the top of the tray menu.
     pub status: String,
     /// An alert due this tick: the event and whole minutes since its start.
@@ -43,7 +55,7 @@ pub struct Step {
 /// without any dedup state.
 pub fn step(cal: &Cal, now: DateTime<Utc>, prev_tick: DateTime<Utc>, camera_active: bool) -> Step {
     Step {
-        display: display(cal, now, camera_active),
+        icon: tray_icon(cal, now, camera_active),
         status: status_line(cal, now),
         alert: pending_alert(cal, now, prev_tick, camera_active),
         sleep: sleep_duration(cal, now),
@@ -103,28 +115,31 @@ fn pending_alert(
     Some((event.clone(), minutes))
 }
 
-/// The tray icon content: person icon while on a call, otherwise the
-/// countdown text ("..." when nothing within an hour, minutes until start,
-/// or negative minutes since start).
-fn display(cal: &Cal, now: DateTime<Utc>, camera_active: bool) -> Display {
-    if camera_active && cal.in_call {
-        return Display::Person;
+/// The tray icon content. A positive countdown to an upcoming call always
+/// wins - it's the one thing worth seeing while busy. The person icon only
+/// replaces what refers to the call the user is already on: the negative
+/// countdown or the idle "...".
+fn tray_icon(cal: &Cal, now: DateTime<Utc>, camera_active: bool) -> TrayIcon {
+    let until_start = cal
+        .next_call
+        .as_ref()
+        .map(|event| event.start_time.signed_duration_since(now));
+
+    // minutes rounded down; only shown within an hour of the start
+    if let Some(until) = until_start
+        && until >= TimeDelta::zero()
+        && until <= TimeDelta::hours(1)
+    {
+        let minutes_until = (until.as_seconds_f32() / 60.0).floor() as i32;
+        return TrayIcon::Text(minutes_until.to_string());
     }
-    let Some(ref event) = cal.next_call else {
-        return Display::Text("...".into());
-    };
-    let until_start = event.start_time.signed_duration_since(now);
-    if until_start < TimeDelta::zero() {
+    if camera_active && cal.in_call {
+        return TrayIcon::Person;
+    }
+    match until_start {
         // negative countdown; rounds rather than floors (e.g. -2.6 -> "-3")
-        Display::Text(format!("{:.0}", until_start.as_seconds_f32() / 60.0).into())
-    } else {
-        // minutes rounded down
-        let minutes_until = (until_start.as_seconds_f32() / 60.0).floor() as i32;
-        if minutes_until <= 60 {
-            Display::Text(minutes_until.to_string().into())
-        } else {
-            Display::Text("...".into())
-        }
+        Some(until) if until < TimeDelta::zero() => TrayIcon::Text(format!("{:.0}", until.as_seconds_f32() / 60.0)),
+        _ => TrayIcon::Idle,
     }
 }
 
@@ -288,14 +303,8 @@ mod tests {
 
     #[test]
     fn display_states() {
-        assert_eq!(
-            step(&Cal::default(), now(), now(), false).display,
-            Display::Text("...".into())
-        );
-        assert_eq!(
-            step(&cal(90, false), now(), now(), false).display,
-            Display::Text("...".into())
-        );
+        assert_eq!(step(&Cal::default(), now(), now(), false).icon, TrayIcon::Idle);
+        assert_eq!(step(&cal(90, false), now(), now(), false).icon, TrayIcon::Idle);
         // floor: 59m30s away shows "59"
         let c = Cal {
             in_call: false,
@@ -304,7 +313,7 @@ mod tests {
                 ..event(0)
             }),
         };
-        assert_eq!(step(&c, now(), now(), false).display, Display::Text("59".into()));
+        assert_eq!(step(&c, now(), now(), false).icon, TrayIcon::Text("59".into()));
         // negative countdown rounds: 2m36s ago shows "-3"
         let c = Cal {
             in_call: true,
@@ -313,9 +322,9 @@ mod tests {
                 ..event(0)
             }),
         };
-        assert_eq!(step(&c, now(), now(), false).display, Display::Text("-3".into()));
+        assert_eq!(step(&c, now(), now(), false).icon, TrayIcon::Text("-3".into()));
         // person only when camera AND in_call
-        assert_eq!(step(&cal(-2, true), now(), now(), true).display, Display::Person);
+        assert_eq!(step(&cal(-2, true), now(), now(), true).icon, TrayIcon::Person);
         assert_eq!(
             step(
                 &Cal {
@@ -326,8 +335,28 @@ mod tests {
                 now(),
                 true
             )
-            .display,
-            Display::Text("...".into())
+            .icon,
+            TrayIcon::Idle
+        );
+        // a positive countdown to the next call beats the person icon...
+        assert_eq!(
+            step(&cal(30, true), now(), now(), true).icon,
+            TrayIcon::Text("30".into())
+        );
+        // ...but the person icon beats the idle "..." (next call >1h away)
+        assert_eq!(step(&cal(90, true), now(), now(), true).icon, TrayIcon::Person);
+        assert_eq!(
+            step(
+                &Cal {
+                    in_call: true,
+                    next_call: None
+                },
+                now(),
+                now(),
+                true
+            )
+            .icon,
+            TrayIcon::Person
         );
     }
 

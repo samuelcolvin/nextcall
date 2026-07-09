@@ -114,8 +114,9 @@ fn background(config: config::Config) -> AnyhowResult<()> {
     let mut scheduled = Utc::now();
 
     loop {
-        // fetch ~FETCH_LEAD before the scheduled tick (usually a cache hit)
-        let (cal, fetch_error) = feed.get(Utc::now());
+        // warm the cache ~FETCH_LEAD before the scheduled tick so network
+        // latency never delays it (usually a no-op cache hit)
+        let fetch_error = feed.fetch(Utc::now());
         if let Some(err) = fetch_error {
             error!("Error fetching calendar: {err}");
             notifications::send("Next Call", Some(err.subtitle()), &err.to_string(), None);
@@ -123,13 +124,13 @@ fn background(config: config::Config) -> AnyhowResult<()> {
         sleep_until(scheduled);
 
         let now = Utc::now();
+        // cache hit: re-selects the calendar windows at the tick itself, so
+        // in_call/next_call aren't up to a sleep-length stale
+        let cal = feed.cal(now);
         let camera_active = camera::camera_active();
         let step = logic::step(&cal, now, prev_tick, camera_active);
         tray::set_status(&step.status);
-        match step.display {
-            logic::Display::Person => tray::show_person(),
-            logic::Display::Text(text) => tray::set_title(&text),
-        }
+        step.icon.show();
         if let Some((event, minutes)) = step.alert {
             logic::fire_alert(&event, minutes, camera_active, config.eleven_labs_key.as_deref());
         }

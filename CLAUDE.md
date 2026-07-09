@@ -74,12 +74,12 @@ The main thread runs the AppKit event loop (`tray::run`, never returns; the "Qui
 ### Core Business Logic (`src/logic.rs`)
 `step()` is a pure function of `(cal, now, prev_tick, camera_active)` — no clock, no IO — returning what the tray shows, the menu status line, an alert if one is due, and how long to sleep. Key rules:
 - **Alerts are boundary crossings**: alert instants are start + k minutes (k = 0..10); one fires iff it lies in `(prev_tick, now]` — exactly-once by construction, no dedup state. Nags (k ≥ 1) are suppressed once the camera is active; the start alert always notifies (speech stays camera-gated)
-- Display: person icon while `camera_active && in_call`, otherwise "..." / minutes countdown / negative minutes since start
+- Display: a positive countdown to an upcoming call (≤1h away) always wins; otherwise the person icon while `camera_active && in_call`; otherwise "..." or the negative minutes since start
 - Sleep: min of next alert instant, event start, start − 1h, top-of-minute during a countdown, and a 5s camera poll while a call is in progress; capped at 180s, floored at 1s
 - `fire_alert` (side-effectful, called by main) sends the notification and camera-gated speech
 
 ### Calendar Integration (`src/ical.rs`)
-- Single public entry point: `CalendarFeed` owns the URL and an internal cache of expanded occurrences; `feed.get(now)` returns a `Cal { in_call, next_call }` plus any fetch error (stale data is kept on failure)
+- Single public type: `CalendarFeed` owns the URL and an internal cache of expanded occurrences; `feed.fetch(now)` refreshes the cache if expired (returning any error; stale data is kept on failure) and `feed.cal(now)` is the pure per-tick window selection returning `Cal { in_call, next_call }`
 - Cache TTL is dynamic: 60s when `next_call` is within 10 minutes (catches last-minute moves/cancellations), 180s otherwise
 - `Cal.next_call` = earliest upcoming event or one started <10 min ago (drives countdown, status and alerts); `Cal.in_call` = some event started within the last hour (drives the person icon)
 - Expands recurring events (RRULE) via the `rrule` crate, honouring EXDATE, override instances (RECURRENCE-ID) and STATUS:CANCELLED

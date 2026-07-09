@@ -100,25 +100,20 @@ impl CalendarFeed {
         }
     }
 
-    /// Returns the current calendar state, fetching only if the cache has
-    /// expired. On fetch failure the stale candidates are kept and the error
-    /// is returned alongside; the expiry is bumped either way, so a persistent
-    /// outage surfaces one error per TTL rather than one per tick.
-    pub fn get(&mut self, now: DateTime<Utc>) -> (Cal, Option<CalendarError>) {
-        let mut fetch_error = None;
+    /// Refreshes the cache if it has expired, returning any fetch error. On
+    /// failure the stale candidates are kept; the expiry is bumped either
+    /// way, so a persistent outage surfaces one error per TTL rather than one
+    /// per tick. Read the resulting state with [`Self::cal`].
+    pub fn fetch(&mut self, now: DateTime<Utc>) -> Option<CalendarError> {
         let fetch_start = Instant::now();
-        let fetched = fetch_start >= self.expires;
-        if fetched {
+        let should_fetch = fetch_start >= self.expires;
+        if should_fetch {
+            let mut fetch_error = None;
             match fetch_candidates(&self.url, now) {
                 Ok(candidates) => self.candidates = candidates,
                 Err(e) => fetch_error = Some(e),
             }
-        }
-        // Re-select windows against the tick's `now` even on cache hits, so a
-        // started event ages out on time. Occurrence expansion is anchored at
-        // fetch time, selection at tick time: safe because TTL ≪ the windows.
-        let cal = select(&self.candidates, now);
-        if fetched {
+            let cal = self.cal(now);
             let near_event = cal
                 .next_call
                 .as_ref()
@@ -127,8 +122,36 @@ impl CalendarFeed {
             if fetch_error.is_none() {
                 info!("fetched calendar in {:?}, {:?}", fetch_start.elapsed(), cal);
             }
+            fetch_error
+        } else {
+            None
         }
-        (cal, fetch_error)
+    }
+
+    /// Pure window selection: which candidate is `next_call` and whether any call
+    /// is in progress, relative to `now`.
+    pub fn cal(&self, now: DateTime<Utc>) -> Cal {
+        let mut cal = Cal::default();
+        for candidate in &self.candidates {
+            // positive = the candidate started that long ago
+            let age = now.signed_duration_since(candidate.start_time);
+            if age.num_minutes() > IN_PROGRESS_MAX_AGE_MINUTES {
+                continue;
+            }
+            // next_call: the earliest upcoming or recently started occurrence
+            if age.num_minutes() <= NEXT_MAX_AGE_MINUTES
+                && cal
+                    .next_call
+                    .as_ref()
+                    .is_none_or(|n| candidate.start_time < n.start_time)
+            {
+                cal.next_call = Some(candidate.clone());
+            }
+            if age.num_seconds() >= 0 {
+                cal.in_call = true;
+            }
+        }
+        cal
     }
 }
 
@@ -201,32 +224,6 @@ fn parse_candidates(content: &[u8], now: DateTime<Utc>) -> Result<Vec<NextEvent>
         }
     }
     Ok(candidates)
-}
-
-/// Pure window selection: which candidate is `next_call` and whether any call
-/// is in progress, relative to `now`.
-fn select(candidates: &[NextEvent], now: DateTime<Utc>) -> Cal {
-    let mut cal = Cal::default();
-    for candidate in candidates {
-        // positive = the candidate started that long ago
-        let age = now.signed_duration_since(candidate.start_time);
-        if age.num_minutes() > IN_PROGRESS_MAX_AGE_MINUTES {
-            continue;
-        }
-        // next_call: the earliest upcoming or recently started occurrence
-        if age.num_minutes() <= NEXT_MAX_AGE_MINUTES
-            && cal
-                .next_call
-                .as_ref()
-                .is_none_or(|n| candidate.start_time < n.start_time)
-        {
-            cal.next_call = Some(candidate.clone());
-        }
-        if age.num_seconds() >= 0 {
-            cal.in_call = true;
-        }
-    }
-    cal
 }
 
 /// The concrete start times of an event that could matter now: the single
@@ -428,7 +425,12 @@ mod tests {
     }
 
     fn parse(events: &str) -> Cal {
-        select(&parse_candidates(feed(events).as_bytes(), now()).unwrap(), now())
+        let calendar_feed = CalendarFeed {
+            url: String::new(),
+            candidates: parse_candidates(feed(events).as_bytes(), now()).unwrap(),
+            expires: Instant::now(),
+        };
+        calendar_feed.cal(now())
     }
 
     fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
