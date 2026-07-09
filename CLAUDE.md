@@ -66,24 +66,24 @@ make lint
 All macOS interaction is implemented in Objective-C (`src/native/*.m`), exposed to Rust as plain C functions and compiled into the cargo build by `build.rs` via the `cc` crate. Only C types (UTF-8 strings, bools) cross the boundary — see `rust-objc.md` for the pattern. Rust modules (`notifications.rs`, `camera.rs`, `tray.rs`) are thin FFI wrappers.
 
 ### Main Entry Point (`src/main.rs`)
-The main thread runs the AppKit event loop (`tray::run`, never returns; the "Quit" menu item terminates the process). Before that it:
-- Loads config and registers for notifications
-- Spawns a background thread that polls the calendar, updates the tray title (thread-safe, dispatched to the main queue in ObjC), and self-paces its sleeps based on how far away the next event is
+The main thread runs the AppKit event loop (`tray::run`, never returns; the "Quit" menu item terminates the process). Before that it loads config, registers for notifications, and spawns the background loop, which is almost stateless — its only state is the `CalendarFeed` cache and the previous tick's timestamp:
+1. Ask the feed for the calendar (cached; network at most once per TTL), ~10s before the scheduled tick so fetch latency never delays an alert
+2. Let the pure `logic::step(cal, now, prev_tick, camera_active)` decide display, status, alert and sleep
+3. Apply the side effects (tray, notification + speech) and sleep until the next tick (wall-clock deadlines, so system sleep and blocking speech don't skew the schedule)
 
 ### Core Business Logic (`src/logic.rs`)
-Drives the background loop:
-1. `find_events` fetches/parses the iCal feed and keeps the previous events on transient errors
-2. `calc_sleep` picks the tray text — "..." when >60 minutes away, minutes countdown when closer — and how long to sleep before re-checking
-3. `event_started` runs the alert sequence: notifications at event start, +2 and +5 minutes, with a negative minutes countdown in the tray
-4. Camera status is checked before alerts to avoid interrupting active calls, and joining a call cancels the remaining alerts within seconds
-5. While any event is in progress, `watch_camera_until` replaces plain sleeps: it polls the camera every 5s and shows the person icon while the user is on the call
+`step()` is a pure function of `(cal, now, prev_tick, camera_active)` — no clock, no IO — returning what the tray shows, the menu status line, an alert if one is due, and how long to sleep. Key rules:
+- **Alerts are boundary crossings**: alert instants are start + k minutes (k = 0..10); one fires iff it lies in `(prev_tick, now]` — exactly-once by construction, no dedup state. Nags (k ≥ 1) are suppressed once the camera is active; the start alert always notifies (speech stays camera-gated)
+- Display: person icon while `camera_active && in_call`, otherwise "..." / minutes countdown / negative minutes since start
+- Sleep: min of next alert instant, event start, start − 1h, top-of-minute during a countdown, and a 5s camera poll while a call is in progress; capped at 180s, floored at 1s
+- `fire_alert` (side-effectful, called by main) sends the notification and camera-gated speech
 
 ### Calendar Integration (`src/ical.rs`)
-- Downloads and parses iCal feeds using the `ical` crate
+- Single public entry point: `CalendarFeed` owns the URL and an internal cache of expanded occurrences; `feed.get(now)` returns a `Cal { in_call, next_call }` plus any fetch error (stale data is kept on failure)
+- Cache TTL is dynamic: 60s when `next_call` is within 10 minutes (catches last-minute moves/cancellations), 180s otherwise
+- `Cal.next_call` = earliest upcoming event or one started <10 min ago (drives countdown, status and alerts); `Cal.in_call` = some event started within the last hour (drives the person icon)
 - Expands recurring events (RRULE) via the `rrule` crate, honouring EXDATE, override instances (RECURRENCE-ID) and STATUS:CANCELLED
-- Extracts video links from URL, LOCATION, or DESCRIPTION fields
-- Supports Zoom, Google Meet, and Microsoft Teams URLs
-- Returns a `CalendarEvents` pair: `next` (earliest upcoming event, or one started <10 min ago — drives countdown and alerts) and `in_progress` (most recently started event within the last hour — drives the person icon)
+- Extracts video links from URL, LOCATION, or DESCRIPTION fields (Zoom, Google Meet, Microsoft Teams)
 
 ### Notifications (`src/notifications.rs` + `src/native/notifications.m`)
 macOS UserNotifications framework integration in Objective-C:

@@ -7,10 +7,9 @@ mod say;
 mod tray;
 
 use anyhow::Result as AnyhowResult;
-use chrono::{Timelike, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use std::fs::OpenOptions;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
 use tracing::{error, info};
 use tracing_subscriber::fmt::time::LocalTime;
 
@@ -100,61 +99,53 @@ fn main() {
     tray::run()
 }
 
-/// Endless loop: find the relevant events, update the tray, sleep until the
-/// next interesting moment, and run the alert sequence when a call starts.
-/// Whenever some event is in progress, the sleeps watch the camera instead,
-/// showing a person icon in the tray while the user is on the call.
+/// How long before each scheduled tick the calendar is fetched, so network
+/// latency never delays an alert firing at its exact instant.
+const FETCH_LEAD: TimeDelta = TimeDelta::seconds(10);
+
+/// The main loop: almost stateless. Each tick asks the feed for the calendar
+/// (cached, network at most once per TTL), lets the pure [`logic::step`]
+/// decide display/alert/sleep from `(cal, now, prev_tick, camera)`, applies
+/// the side effects, and sleeps. The only state is the feed's cache and the
+/// previous tick's timestamp (which makes alerts exactly-once).
 fn background(config: config::Config) -> AnyhowResult<()> {
-    // True until the first fetch has been handled: an event already in
-    // progress at launch is shown in the tray but its alerts are not replayed.
-    let mut first_run = true;
-    let mut events = ical::CalendarEvents::default();
-    // Event whose alert sequence has already run. A started event stays in the
-    // `next` window for 10 minutes, so without this the sequence would restart
-    // (and re-notify) on every fetch until the event ages out.
-    let mut alerted: Option<ical::NextEvent> = None;
+    let mut feed = ical::CalendarFeed::new(config.ical_url);
+    let mut prev_tick = Utc::now();
+    let mut scheduled = Utc::now();
 
     loop {
-        events = logic::find_events(&config.ical_url, events);
-        tray::set_status(&logic::status_line(&events));
+        // fetch ~FETCH_LEAD before the scheduled tick (usually a cache hit)
+        let (cal, fetch_error) = feed.get(Utc::now());
+        if let Some(err) = fetch_error {
+            error!("Error fetching calendar: {err}");
+            notifications::send("Next Call", Some(err.subtitle()), &err.to_string(), None);
+        }
+        sleep_until(scheduled);
 
-        // What to show while sleeping, and for how long, based on `next`.
-        let (icon_text, next) = match events.next {
-            Some(ref next_event) => {
-                let result = logic::calc_sleep(next_event)?;
-                (result.icon_text, result.next)
-            }
-            None => ("...".into(), logic::StepNext::Sleep(logic::DEFAULT_CHECK_INTERVAL)),
-        };
+        let now = Utc::now();
+        let camera_active = camera::camera_active();
+        let step = logic::step(&cal, now, prev_tick, camera_active);
+        tray::set_status(&step.status);
+        match step.display {
+            logic::Display::Person => tray::show_person(),
+            logic::Display::Text(text) => tray::set_title(&text),
+        }
+        if let Some((event, minutes)) = step.alert {
+            logic::fire_alert(&event, minutes, camera_active, config.eleven_labs_key.as_deref());
+        }
 
-        match next {
-            logic::StepNext::Sleep(duration) => {
-                if events.in_progress.is_some() {
-                    // A call may be live: person icon while the camera is on.
-                    logic::watch_camera_until(Instant::now() + duration, &icon_text);
-                } else {
-                    tray::set_title(&icon_text);
-                    sleep(duration);
-                }
-            }
-            logic::StepNext::EventStarted(event) => {
-                if first_run {
-                    // Restarted mid-meeting: skip straight to watching.
-                    alerted = Some(event.clone());
-                }
-                if alerted.as_ref() == Some(&event) {
-                    // Already alerted: watch the camera until the next minute
-                    // boundary (when the countdown ticks and the calendar is
-                    // refetched).
-                    let deadline = Instant::now() + Duration::from_secs(60 - u64::from(Utc::now().second()));
-                    logic::watch_camera_until(deadline, &icon_text);
-                } else {
-                    tray::set_title(&icon_text);
-                    logic::event_started(event.clone(), config.eleven_labs_key.as_deref())?;
-                    alerted = Some(event);
-                }
-            }
-        };
-        first_run = false;
+        prev_tick = now;
+        scheduled = now + TimeDelta::from_std(step.sleep)?;
+        // long leg of the sleep; zero when the next tick is <= FETCH_LEAD away
+        sleep_until(scheduled - FETCH_LEAD);
+    }
+}
+
+/// Sleeps until the wall-clock instant `t` (no-op if already past). Wall time
+/// rather than `Instant`: `Instant` doesn't advance during system sleep, and
+/// alert firing can block for seconds; recomputing keeps ticks on schedule.
+fn sleep_until(t: DateTime<Utc>) {
+    if let Ok(duration) = t.signed_duration_since(Utc::now()).to_std() {
+        sleep(duration.min(logic::DEFAULT_CHECK_INTERVAL));
     }
 }

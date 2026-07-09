@@ -1,13 +1,16 @@
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use chrono_tz::Tz;
 use ical::IcalParser;
-pub use ical::parser::ical::component::IcalEvent;
+use ical::parser::ical::component::IcalEvent;
 use ical::property::Property;
 use std::collections::HashMap;
+use std::fmt;
 use std::io::BufReader;
 use std::str::FromStr;
-use tracing::warn;
+use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
+/// A concrete occurrence of a calendar event with a video link.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NextEvent {
     pub start_time: DateTime<Utc>,
@@ -15,18 +18,19 @@ pub struct NextEvent {
     pub video_link: String,
 }
 
-/// The calendar events the app cares about right now. Both may point at the
-/// same event (one that started a few minutes ago).
+/// What the rest of the app needs from the calendar right now.
 #[derive(Debug, Clone, Default)]
-pub struct CalendarEvents {
-    /// Earliest event that is upcoming or started within the alert window;
-    /// drives the countdown and the alert sequence.
-    pub next: Option<NextEvent>,
-    /// Most recently started event within the last hour; drives the person
-    /// icon while the camera is active.
-    pub in_progress: Option<NextEvent>,
+pub struct Cal {
+    /// An event started within the last hour: a call is (probably) happening.
+    /// Combined with camera state for the tray person icon and poll cadence.
+    pub in_call: bool,
+    /// Earliest event that is upcoming or started <10 min ago; drives the
+    /// countdown, the status line and the alerts.
+    pub next_call: Option<NextEvent>,
 }
 
+/// Why a calendar fetch failed; [`CalendarFeed::get`] returns this alongside
+/// the (stale) calendar state so the caller can surface it.
 #[derive(Debug)]
 pub enum CalendarError {
     // for any status code > 400, should be `{status}: {text}`
@@ -37,24 +41,99 @@ pub enum CalendarError {
     NetworkError(String),
 }
 
+impl CalendarError {
+    /// Short human-readable category, used as the notification subtitle.
+    pub fn subtitle(&self) -> &'static str {
+        match self {
+            Self::HttpStatus(_) => "HTTP error fetching calendar",
+            Self::InvalidFormat(_) => "Invalid ical response",
+            Self::NetworkError(_) => "Network error fetching calendar",
+        }
+    }
+}
+
+impl fmt::Display for CalendarError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HttpStatus(err) | Self::InvalidFormat(err) | Self::NetworkError(err) => write!(f, "{err}"),
+        }
+    }
+}
+
 /// Alert window: events that started less than this many minutes ago still
-/// count as `next`, so their alert sequence can run (it ends at +5 minutes).
+/// count as `next_call`, so alerts can fire (one per minute since start).
 pub const NEXT_MAX_AGE_MINUTES: i64 = 10;
 
-/// In-progress window: events that started within the last hour count as
-/// `in_progress`, so being on the call shows the person icon for its
-/// (assumed ~1h) duration.
+/// In-call window: an event that started within the last hour sets
+/// [`Cal::in_call`], showing the person icon for its (assumed ~1h) duration.
 const IN_PROGRESS_MAX_AGE_MINUTES: i64 = 60;
 
 /// How many upcoming occurrences of a recurring event to consider. 2 covers
 /// the "one in progress + the next one upcoming" case (e.g. a daily standup).
 const RECURRING_OCCURRENCE_LIMIT: u16 = 2;
 
-/// Fetches and parses the iCal feed, returning the relevant events (see
-/// [`CalendarEvents`]). Only events with video links are considered;
-/// recurring events are expanded to their concrete occurrences.
-pub fn get_events(url: &str) -> Result<CalendarEvents, CalendarError> {
-    // Download the iCal file
+/// Cache TTL while `next_call` starts (or started) within 10 minutes: refetch
+/// often enough to catch a meeting moved or cancelled at the last minute.
+const NEAR_EVENT_TTL: Duration = Duration::from_secs(60);
+
+/// Cache TTL otherwise; also how often a fetch failure is re-reported.
+const IDLE_TTL: Duration = Duration::from_secs(180);
+
+/// The calendar feed: owns the URL and an internal cache of expanded event
+/// occurrences, so the main loop can call [`CalendarFeed::get`] every tick
+/// (possibly every few seconds) while the network is hit at most once per TTL.
+pub struct CalendarFeed {
+    url: String,
+    /// Expanded occurrences from the last successful fetch.
+    candidates: Vec<NextEvent>,
+    /// When the cache expires and the next `get` fetches again.
+    expires: Instant,
+}
+
+impl CalendarFeed {
+    /// A feed whose cache is empty and already expired: the first [`Self::get`] fetches.
+    pub fn new(url: String) -> Self {
+        Self {
+            url,
+            candidates: Vec::new(),
+            expires: Instant::now(),
+        }
+    }
+
+    /// Returns the current calendar state, fetching only if the cache has
+    /// expired. On fetch failure the stale candidates are kept and the error
+    /// is returned alongside; the expiry is bumped either way, so a persistent
+    /// outage surfaces one error per TTL rather than one per tick.
+    pub fn get(&mut self, now: DateTime<Utc>) -> (Cal, Option<CalendarError>) {
+        let mut fetch_error = None;
+        let fetch_start = Instant::now();
+        let fetched = fetch_start >= self.expires;
+        if fetched {
+            match fetch_candidates(&self.url, now) {
+                Ok(candidates) => self.candidates = candidates,
+                Err(e) => fetch_error = Some(e),
+            }
+        }
+        // Re-select windows against the tick's `now` even on cache hits, so a
+        // started event ages out on time. Occurrence expansion is anchored at
+        // fetch time, selection at tick time: safe because TTL ≪ the windows.
+        let cal = select(&self.candidates, now);
+        if fetched {
+            let near_event = cal
+                .next_call
+                .as_ref()
+                .is_some_and(|e| e.start_time.signed_duration_since(now) < TimeDelta::minutes(NEXT_MAX_AGE_MINUTES));
+            self.expires = Instant::now() + if near_event { NEAR_EVENT_TTL } else { IDLE_TTL };
+            if fetch_error.is_none() {
+                info!("fetched calendar in {:?}, {:?}", fetch_start.elapsed(), cal);
+            }
+        }
+        (cal, fetch_error)
+    }
+}
+
+/// Downloads the feed and expands it into candidate occurrences.
+fn fetch_candidates(url: &str, now: DateTime<Utc>) -> Result<Vec<NextEvent>, CalendarError> {
     let response = reqwest::blocking::get(url).map_err(|e| CalendarError::NetworkError(e.to_string()))?;
 
     let status = response.status();
@@ -67,12 +146,14 @@ pub fn get_events(url: &str) -> Result<CalendarEvents, CalendarError> {
         .bytes()
         .map_err(|e| CalendarError::NetworkError(e.to_string()))?;
 
-    parse_events(content.as_ref(), Utc::now())
+    parse_candidates(content.as_ref(), now)
 }
 
-/// Parses raw iCal bytes into [`CalendarEvents`], evaluating windows relative
-/// to `now` (a parameter so tests can pin the clock).
-fn parse_events(content: &[u8], now: DateTime<Utc>) -> Result<CalendarEvents, CalendarError> {
+/// Parses raw iCal bytes into candidate occurrences: every event occurrence
+/// with a video link from `now - 60min` onward (RRULE-expanded, with
+/// overridden and cancelled instances removed). No window selection here -
+/// that happens per tick in [`select`].
+fn parse_candidates(content: &[u8], now: DateTime<Utc>) -> Result<Vec<NextEvent>, CalendarError> {
     let parser = IcalParser::new(BufReader::new(content));
 
     // Collect all events first: override instances (RECURRENCE-ID) must be
@@ -98,7 +179,7 @@ fn parse_events(content: &[u8], now: DateTime<Utc>) -> Result<CalendarEvents, Ca
         }
     }
 
-    let mut events = CalendarEvents::default();
+    let mut candidates = Vec::new();
     for event in &all_events {
         // Cancelled events (and cancelled single occurrences) stay in the feed
         if get_property(event, "STATUS").as_deref() == Some("CANCELLED") {
@@ -109,33 +190,43 @@ fn parse_events(content: &[u8], now: DateTime<Utc>) -> Result<CalendarEvents, Ca
         };
         for start_time in occurrences(event, now, &overridden) {
             // positive = the occurrence started that long ago
-            let age = now.signed_duration_since(start_time);
-            if age.num_minutes() > IN_PROGRESS_MAX_AGE_MINUTES {
+            if now.signed_duration_since(start_time).num_minutes() > IN_PROGRESS_MAX_AGE_MINUTES {
                 continue;
             }
-            let candidate = NextEvent {
+            candidates.push(NextEvent {
                 start_time,
                 summary: get_event_summary(event).unwrap_or_else(|| "Unknown".to_string()),
                 video_link: video_link.clone(),
-            };
-            // next: the earliest upcoming or recently started event
-            if age.num_minutes() <= NEXT_MAX_AGE_MINUTES
-                && events.next.as_ref().is_none_or(|n| candidate.start_time < n.start_time)
-            {
-                events.next = Some(candidate.clone());
-            }
-            // in_progress: the most recently *started* event
-            if age.num_seconds() >= 0
-                && events
-                    .in_progress
-                    .as_ref()
-                    .is_none_or(|p| candidate.start_time > p.start_time)
-            {
-                events.in_progress = Some(candidate);
-            }
+            });
         }
     }
-    Ok(events)
+    Ok(candidates)
+}
+
+/// Pure window selection: which candidate is `next_call` and whether any call
+/// is in progress, relative to `now`.
+fn select(candidates: &[NextEvent], now: DateTime<Utc>) -> Cal {
+    let mut cal = Cal::default();
+    for candidate in candidates {
+        // positive = the candidate started that long ago
+        let age = now.signed_duration_since(candidate.start_time);
+        if age.num_minutes() > IN_PROGRESS_MAX_AGE_MINUTES {
+            continue;
+        }
+        // next_call: the earliest upcoming or recently started occurrence
+        if age.num_minutes() <= NEXT_MAX_AGE_MINUTES
+            && cal
+                .next_call
+                .as_ref()
+                .is_none_or(|n| candidate.start_time < n.start_time)
+        {
+            cal.next_call = Some(candidate.clone());
+        }
+        if age.num_seconds() >= 0 {
+            cal.in_call = true;
+        }
+    }
+    cal
 }
 
 /// The concrete start times of an event that could matter now: the single
@@ -269,7 +360,7 @@ fn extract_datetime_property(event: &IcalEvent, name: &str) -> Option<DateTime<U
     None
 }
 
-pub fn get_property(event: &IcalEvent, name: &str) -> Option<String> {
+fn get_property(event: &IcalEvent, name: &str) -> Option<String> {
     event
         .properties
         .iter()
@@ -277,11 +368,11 @@ pub fn get_property(event: &IcalEvent, name: &str) -> Option<String> {
         .and_then(|p| p.value.clone())
 }
 
-pub fn get_event_summary(event: &IcalEvent) -> Option<String> {
+fn get_event_summary(event: &IcalEvent) -> Option<String> {
     get_property(event, "SUMMARY")
 }
 
-pub fn get_video_link(event: &IcalEvent) -> Option<String> {
+fn get_video_link(event: &IcalEvent) -> Option<String> {
     // Check for X-GOOGLE-CONFERENCE property (Google Calendar)
     if let Some(url) = get_property(event, "X-GOOGLE-CONFERENCE")
         && url.starts_with("http")
@@ -336,8 +427,8 @@ mod tests {
         format!("BEGIN:VCALENDAR\nVERSION:2.0\n{events}END:VCALENDAR\n")
     }
 
-    fn parse(events: &str) -> CalendarEvents {
-        parse_events(feed(events).as_bytes(), now()).unwrap()
+    fn parse(events: &str) -> Cal {
+        select(&parse_candidates(feed(events).as_bytes(), now()).unwrap(), now())
     }
 
     fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
@@ -348,92 +439,123 @@ mod tests {
 
     #[test]
     fn one_off_upcoming_event() {
-        let events = parse(&format!(
+        let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART:20260709T100000Z\nSUMMARY:one-off\n{LINK}END:VEVENT\n"
         ));
-        assert_eq!(events.next.unwrap().start_time, utc(2026, 7, 9, 10, 0));
-        assert!(events.in_progress.is_none());
+        assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 9, 10, 0));
+        assert!(!cal.in_call);
     }
 
     #[test]
     fn event_without_video_link_ignored() {
-        let events = parse("BEGIN:VEVENT\nDTSTART:20260709T100000Z\nSUMMARY:no link\nEND:VEVENT\n");
-        assert!(events.next.is_none());
-        assert!(events.in_progress.is_none());
+        let cal = parse("BEGIN:VEVENT\nDTSTART:20260709T100000Z\nSUMMARY:no link\nEND:VEVENT\n");
+        assert!(cal.next_call.is_none());
+        assert!(!cal.in_call);
     }
 
     #[test]
     fn recurring_event_started_8_minutes_ago() {
         // daily standup since July 1st; today's occurrence started at 09:00
-        let events = parse(&format!(
+        let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART:20260701T090000Z\nRRULE:FREQ=DAILY\nSUMMARY:standup\nUID:a@x\n{LINK}END:VEVENT\n"
         ));
-        let next = events.next.unwrap();
+        let next = cal.next_call.unwrap();
         assert_eq!(next.start_time, utc(2026, 7, 9, 9, 0));
         assert_eq!(next.summary, "standup");
-        assert_eq!(events.in_progress.unwrap().start_time, utc(2026, 7, 9, 9, 0));
+        assert!(cal.in_call);
     }
 
     #[test]
     fn recurring_event_with_tzid() {
         // 11:00 Amsterdam == 09:00 UTC in July (CEST), weekdays only:
         // today's occurrence started 8 minutes before the pinned `now`
-        let events = parse(&format!(
+        let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART;TZID=Europe/Amsterdam:20260708T110000\nRRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR\nSUMMARY:eu standup\nUID:b@x\n{LINK}END:VEVENT\n"
         ));
-        assert_eq!(events.next.unwrap().start_time, utc(2026, 7, 9, 9, 0));
-        assert_eq!(events.in_progress.unwrap().start_time, utc(2026, 7, 9, 9, 0));
+        assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 9, 9, 0));
+        assert!(cal.in_call);
     }
 
     #[test]
     fn old_recurring_event_out_of_both_windows() {
         // started 68 minutes ago: too old for either window, so the next
         // occurrence (tomorrow) is surfaced instead
-        let events = parse(&format!(
+        let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART;TZID=Europe/Amsterdam:20260708T100000\nRRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR\nSUMMARY:eu standup\nUID:b@x\n{LINK}END:VEVENT\n"
         ));
-        assert_eq!(events.next.unwrap().start_time, utc(2026, 7, 10, 8, 0));
-        assert!(events.in_progress.is_none());
+        assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 10, 8, 0));
+        assert!(!cal.in_call);
     }
 
     #[test]
     fn exdate_skips_occurrence() {
-        let events = parse(&format!(
+        let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART:20260701T090000Z\nRRULE:FREQ=DAILY\nEXDATE:20260709T090000Z\nSUMMARY:standup\nUID:c@x\n{LINK}END:VEVENT\n"
         ));
         // today's occurrence removed; next is tomorrow's
-        assert_eq!(events.next.unwrap().start_time, utc(2026, 7, 10, 9, 0));
-        assert!(events.in_progress.is_none());
+        assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 10, 9, 0));
+        assert!(!cal.in_call);
     }
 
     #[test]
     fn overridden_occurrence_replaced_by_instance() {
         // today's 09:00 occurrence was moved to 14:00 via an override instance
-        let events = parse(&format!(
+        let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART:20260701T090000Z\nRRULE:FREQ=DAILY\nSUMMARY:standup\nUID:d@x\n{LINK}END:VEVENT\n\
              BEGIN:VEVENT\nDTSTART:20260709T140000Z\nRECURRENCE-ID:20260709T090000Z\nSUMMARY:standup (moved)\nUID:d@x\n{LINK}END:VEVENT\n"
         ));
         // the generated 09:00 occurrence is suppressed; the moved instance wins
-        assert_eq!(events.next.unwrap().start_time, utc(2026, 7, 9, 14, 0));
-        assert!(events.in_progress.is_none());
+        assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 9, 14, 0));
+        assert!(!cal.in_call);
     }
 
     #[test]
     fn cancelled_event_ignored() {
-        let events = parse(&format!(
+        let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART:20260709T100000Z\nSTATUS:CANCELLED\nSUMMARY:cancelled\n{LINK}END:VEVENT\n"
         ));
-        assert!(events.next.is_none());
+        assert!(cal.next_call.is_none());
     }
 
     #[test]
-    fn in_progress_and_next_are_tracked_separately() {
+    fn in_call_and_next_call_tracked_separately() {
         // meeting started 30 min ago plus one later today
-        let events = parse(&format!(
+        let cal = parse(&format!(
             "BEGIN:VEVENT\nDTSTART:20260709T083800Z\nSUMMARY:current\n{LINK}END:VEVENT\n\
              BEGIN:VEVENT\nDTSTART:20260709T150000Z\nSUMMARY:later\n{LINK}END:VEVENT\n"
         ));
-        assert_eq!(events.next.unwrap().summary, "later");
-        assert_eq!(events.in_progress.unwrap().summary, "current");
+        assert_eq!(cal.next_call.unwrap().summary, "later");
+        assert!(cal.in_call);
+    }
+
+    #[test]
+    fn next_call_window_boundary() {
+        // started exactly 10 minutes ago: still next_call
+        let cal = parse(&format!(
+            "BEGIN:VEVENT\nDTSTART:20260709T085800Z\nSUMMARY:ten\n{LINK}END:VEVENT\n"
+        ));
+        assert_eq!(cal.next_call.unwrap().summary, "ten");
+
+        // started 11 minutes ago: no longer next_call, but still in_call
+        let cal = parse(&format!(
+            "BEGIN:VEVENT\nDTSTART:20260709T085700Z\nSUMMARY:eleven\n{LINK}END:VEVENT\n"
+        ));
+        assert!(cal.next_call.is_none());
+        assert!(cal.in_call);
+    }
+
+    #[test]
+    fn in_call_window_boundary() {
+        // started exactly 60 minutes ago: still in_call
+        let cal = parse(&format!(
+            "BEGIN:VEVENT\nDTSTART:20260709T080800Z\nSUMMARY:hour\n{LINK}END:VEVENT\n"
+        ));
+        assert!(cal.in_call);
+
+        // started 61 minutes ago: call assumed over
+        let cal = parse(&format!(
+            "BEGIN:VEVENT\nDTSTART:20260709T080700Z\nSUMMARY:over\n{LINK}END:VEVENT\n"
+        ));
+        assert!(!cal.in_call);
     }
 }
