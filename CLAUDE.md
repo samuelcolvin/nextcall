@@ -80,6 +80,7 @@ Drives the background loop:
 
 ### Calendar Integration (`src/ical.rs`)
 - Downloads and parses iCal feeds using the `ical` crate
+- Expands recurring events (RRULE) via the `rrule` crate, honouring EXDATE, override instances (RECURRENCE-ID) and STATUS:CANCELLED
 - Extracts video links from URL, LOCATION, or DESCRIPTION fields
 - Supports Zoom, Google Meet, and Microsoft Teams URLs
 - Returns a `CalendarEvents` pair: `next` (earliest upcoming event, or one started <10 min ago — drives countdown and alerts) and `in_progress` (most recently started event within the last hour — drives the person icon)
