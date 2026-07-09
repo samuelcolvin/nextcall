@@ -75,9 +75,15 @@ fn pending_alert(
     camera_active: bool,
 ) -> Option<(NextEvent, i64)> {
     let event = cal.next_call.as_ref()?;
+    let since_start = now.signed_duration_since(event.start_time);
+    if since_start < TimeDelta::zero() {
+        // not started: num_minutes() truncates toward zero, so a tick in the
+        // final minute before start would otherwise fire the start alert early
+        return None;
+    }
     // whole minutes since start = k of the latest alert instant at or before now
-    let minutes = now.signed_duration_since(event.start_time).num_minutes();
-    if !(0..NEXT_MAX_AGE_MINUTES).contains(&minutes) {
+    let minutes = since_start.num_minutes();
+    if minutes >= NEXT_MAX_AGE_MINUTES {
         return None;
     }
     let instant = event.start_time + TimeDelta::minutes(minutes);
@@ -254,6 +260,20 @@ mod tests {
         assert_eq!(fired.alert.as_ref().unwrap().1, 0, "start alert fires despite camera");
         let nag = step(&cal(-2), now(), now() - secs(5), true);
         assert!(nag.alert.is_none(), "nag suppressed while on the call");
+    }
+
+    #[test]
+    fn no_alert_before_start() {
+        // tick 30s before start (the start - 60s top-of-minute wake):
+        // truncation toward zero must not fire the start alert early
+        let c = Cal {
+            next_call: Some(NextEvent {
+                start_time: now() + secs(30),
+                ..event(0)
+            }),
+        };
+        let step = step(&c, now(), now() - secs(60), false);
+        assert!(step.alert.is_none());
     }
 
     #[test]

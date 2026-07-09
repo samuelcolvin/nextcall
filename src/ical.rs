@@ -140,7 +140,7 @@ impl CalendarFeed {
                 .is_some_and(|e| e.start_time.signed_duration_since(now) < TimeDelta::minutes(NEXT_MAX_AGE_MINUTES));
             self.expires = Instant::now() + if near_event { NEAR_EVENT_TTL } else { IDLE_TTL };
             if fetch_error.is_none() {
-                info!("fetched calendar in {:?}, {cal}", fetch_start.elapsed());
+                info!("fetched calendar in {:.2}s, {cal}", fetch_start.elapsed().as_secs_f64());
             }
             fetch_error
         } else {

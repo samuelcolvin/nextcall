@@ -110,7 +110,7 @@ fn main() {
 
 /// How long before each scheduled tick the calendar is fetched, so network
 /// latency never delays an alert firing at its exact instant.
-const FETCH_LEAD: TimeDelta = TimeDelta::seconds(10);
+const FETCH_LEAD: TimeDelta = TimeDelta::seconds(20);
 
 /// The main loop: almost stateless. Each tick asks the feed for the calendar
 /// (cached, network at most once per TTL), lets the pure [`logic::step`]
@@ -146,7 +146,11 @@ fn background(config: config::Config) -> AnyhowResult<()> {
 
         prev_tick = now;
         scheduled = now + TimeDelta::from_std(step.sleep)?;
-        info!("sleeping {:?} until {}", step.sleep, scheduled.format("%H:%M:%S"));
+        info!(
+            "sleeping {:.2}s until {}",
+            step.sleep.as_secs_f64(),
+            scheduled.format("%H:%M:%S")
+        );
         // long leg of the sleep; zero when the next tick is <= FETCH_LEAD away
         sleep_until(scheduled - FETCH_LEAD);
     }
