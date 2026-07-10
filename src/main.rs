@@ -113,14 +113,16 @@ fn main() {
 const FETCH_LEAD: TimeDelta = TimeDelta::seconds(20);
 
 /// The main loop: almost stateless. Each tick asks the feed for the calendar
-/// (cached, network at most once per TTL), lets the pure [`logic::step`]
-/// decide display/alert/sleep from `(cal, now, prev_tick, camera)`, applies
-/// the side effects, and sleeps. The only state is the feed's cache and the
-/// previous tick's timestamp (which makes alerts exactly-once).
+/// (cached, network at most once per TTL), reads the camera and the tray's
+/// dismiss toggle, lets the pure [`logic::step`] decide display/alert/sleep,
+/// applies the side effects, and sleeps. The only state: the feed's cache,
+/// the previous tick's timestamp (alerts exactly-once) and a log-only var.
 fn background(config: config::Config) -> AnyhowResult<()> {
     let mut feed = ical::CalendarFeed::new(config.ical_url);
     let mut prev_tick = Utc::now();
     let mut scheduled = Utc::now();
+    // Previous tick's dismissal, kept only to log transitions.
+    let mut prev_dismissed: Option<DateTime<Utc>> = None;
 
     loop {
         // warm the cache ~FETCH_LEAD before the scheduled tick so network
@@ -136,10 +138,24 @@ fn background(config: config::Config) -> AnyhowResult<()> {
         // cache hit: re-selects the calendar window at the tick itself, so
         // next_call isn't up to a sleep-length stale
         let cal = feed.cal(now);
+        // the tray owns the dismiss toggle; read it like the camera state and
+        // match against the call that is still next - a stale value (the call
+        // changed while we slept) must never mute a different call
+        let dismissed = tray::dismissed_ts().and_then(|ts| {
+            let event = cal.next_call.as_ref()?;
+            (event.start_time.timestamp() == ts).then_some(event.start_time)
+        });
+        if dismissed != prev_dismissed {
+            info!("dismissed call: {dismissed:?}");
+            prev_dismissed = dismissed;
+        }
         let camera_active = camera::camera_active();
-        let step = logic::step(&cal, now, prev_tick, camera_active);
+        let step = logic::step(&cal, now, prev_tick, camera_active, dismissed);
         tray::set_status(&step.status);
         tray::set_title(&step.title);
+        // arm the menu's Dismiss item with the call it would act on
+        // (0 disables it: no upcoming call) and expire a stale dismissal
+        tray::set_dismiss_target(cal.next_call.as_ref().map_or(0, |e| e.start_time.timestamp()));
         if let Some((event, minutes)) = step.alert {
             logic::fire_alert(&event, minutes, camera_active, config.eleven_labs_key.as_deref());
         }

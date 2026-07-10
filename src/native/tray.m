@@ -4,10 +4,44 @@
 // displays plain text natively, so the countdown is just a title string.
 // Exposed to Rust as tray_run / tray_set_title (declared in src/tray.rs).
 #import <AppKit/AppKit.h>
+#import <stdatomic.h>
+#import <stdbool.h>
 
 // This run's log file, set via tray_set_log_path; nil until then. Declared
 // before NCMenuActions because its openLog: action reads it.
 static NSString *gLogPath = nil;
+
+// The "Dismiss" toggle, owned by the tray: Rust arms gDismissTarget each tick
+// (next call's start unix time; 0 = no call, item disabled) and a click flips
+// gDismissedTs between 0 and the target. Atomics: Rust polls off-main-thread.
+static _Atomic int64_t gDismissTarget = 0;
+static _Atomic int64_t gDismissedTs = 0;
+
+// Created once in tray_run on the main thread; live for the process lifetime.
+static NSStatusItem *gStatusItem = nil;
+// The "Dismiss" / "Revert dismiss" menu item; its title tracks gDismissedTs.
+static NSMenuItem *gDismissMenuItem = nil;
+// Last raw countdown text from Rust; render() derives the display from it.
+static NSString *gTitle = @"...";
+
+// Renders the status item and Dismiss menu item from (gTitle, gDismissedTs) —
+// the one place display state is applied, called when either input changes.
+// Main thread only.
+static void render(void) {
+    bool dismissed = atomic_load(&gDismissedTs) != 0;
+    if (dismissed) {
+        // the muted bell joins the countdown, or alone replaces the idle "..."
+        gStatusItem.button.title = [gTitle isEqualToString:@"..."] ? @"" : gTitle;
+        // SF Symbol = monochrome template image, follows menu bar light/dark
+        gStatusItem.button.image = [NSImage imageWithSystemSymbolName:@"bell.slash"
+                                             accessibilityDescription:@"alerts dismissed"];
+        gStatusItem.button.imagePosition = NSImageLeft;
+    } else {
+        gStatusItem.button.title = gTitle;
+        gStatusItem.button.image = nil;
+    }
+    gDismissMenuItem.title = dismissed ? @"Revert dismiss" : @"Dismiss";
+}
 
 // Target for menu items with custom actions. NSMenuItem holds its target
 // weakly, so the static gMenuActions reference below keeps it alive.
@@ -29,10 +63,29 @@ static NSString *gLogPath = nil;
     }
 }
 
+// Toggles the dismissed state for the armed call and re-renders immediately
+// (no waiting on the Rust loop, which may be mid-sleep for minutes). Rust
+// picks the new state up on its next tick, always before any alert fires.
+- (void)dismissCall:(id)sender {
+    int64_t target = atomic_load(&gDismissTarget);
+    if (target == 0) {
+        return;
+    }
+    atomic_store(&gDismissedTs, atomic_load(&gDismissedTs) == 0 ? target : 0);
+    render();
+}
+
+// Greys out "Dismiss" when there is no upcoming call to act on (target 0).
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(dismissCall:)) {
+        return atomic_load(&gDismissTarget) != 0;
+    }
+    return YES;
+}
+
 @end
 
 // Created once in tray_run on the main thread; live for the process lifetime.
-static NSStatusItem *gStatusItem = nil;
 static NCMenuActions *gMenuActions = nil;
 // First menu entry: a disabled line showing the current status (next call /
 // call in progress). NSMenu auto-disables it because it has no action.
@@ -54,17 +107,22 @@ void tray_run(void) {
         NSMenu *menu = [[NSMenu alloc] init];
         gStatusMenuItem = [[NSMenuItem alloc] initWithTitle:@"Loading calendar…" action:nil keyEquivalent:@""];
         [menu addItem:gStatusMenuItem];
+        gDismissMenuItem = [[NSMenuItem alloc] initWithTitle:@"Dismiss"
+                                                      action:@selector(dismissCall:)
+                                               keyEquivalent:@""];
+        gDismissMenuItem.target = gMenuActions;
+        [menu addItem:gDismissMenuItem];
         [menu addItem:[NSMenuItem separatorItem]];
-        NSMenuItem *github = [[NSMenuItem alloc] initWithTitle:@"About nextcall"
-                                                        action:@selector(openGitHub:)
-                                                 keyEquivalent:@""];
-        github.target = gMenuActions;
-        [menu addItem:github];
         NSMenuItem *viewLog = [[NSMenuItem alloc] initWithTitle:@"View Log"
                                                          action:@selector(openLog:)
                                                   keyEquivalent:@""];
         viewLog.target = gMenuActions;
         [menu addItem:viewLog];
+        NSMenuItem *github = [[NSMenuItem alloc] initWithTitle:@"About nextcall"
+                                                        action:@selector(openGitHub:)
+                                                 keyEquivalent:@""];
+        github.target = gMenuActions;
+        [menu addItem:github];
         [menu addItem:[NSMenuItem separatorItem]];
         // nil target: the responder chain routes terminate: to NSApp.
         [menu addItemWithTitle:@"Quit Nextcall" action:@selector(terminate:) keyEquivalent:@""];
@@ -82,7 +140,8 @@ void tray_set_title(const char *title) {
         // Copy to NSString now: the char* is only valid for this call.
         NSString *text = @(title);
         dispatch_async(dispatch_get_main_queue(), ^{
-          gStatusItem.button.title = text;
+          gTitle = text;
+          render();
         });
     }
 }
@@ -96,6 +155,29 @@ void tray_set_status(const char *status) {
           gStatusMenuItem.title = text;
         });
     }
+}
+
+// Arms the "Dismiss" menu item with the current call's start unix time
+// (0 = no call: the item is disabled), clearing a dismissal that no longer
+// refers to it — how a dismissal expires when the next call changes. Called
+// from Rust every tick.
+void tray_set_dismiss_target(int64_t start_ts) {
+    atomic_store(&gDismissTarget, start_ts);
+    int64_t stale = atomic_load(&gDismissedTs);
+    if (stale != 0 && stale != start_ts) {
+        // CAS: only clear the stale value we saw, never a racing fresh click
+        atomic_compare_exchange_strong(&gDismissedTs, &stale, 0);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      render();
+    });
+}
+
+// The start unix time of the call the user dismissed via the menu (0 = none).
+// Polled from Rust each tick and matched against the current next call there
+// before suppressing alerts, so a stale value is harmless.
+int64_t tray_dismissed_ts(void) {
+    return atomic_load(&gDismissedTs);
 }
 
 // Records the path opened by the "View Log" menu item. Thread-safe, same

@@ -29,12 +29,19 @@ pub struct Step {
 /// Pure per-tick decision. `prev_tick` is the previous invocation's `now`;
 /// an alert fires iff its scheduled instant lies in `(prev_tick, now]` -
 /// every instant belongs to exactly one tick, so alerts fire exactly once
-/// without any dedup state.
-pub fn step(cal: &Cal, now: DateTime<Utc>, prev_tick: DateTime<Utc>, camera_active: bool) -> Step {
+/// without any dedup state. `dismissed` is the start time of a call the user
+/// muted via the tray's "Dismiss" item: all its alerts are suppressed.
+pub fn step(
+    cal: &Cal,
+    now: DateTime<Utc>,
+    prev_tick: DateTime<Utc>,
+    camera_active: bool,
+    dismissed: Option<DateTime<Utc>>,
+) -> Step {
     Step {
         title: tray_title(cal, now),
         status: status_line(cal, now),
-        alert: pending_alert(cal, now, prev_tick, camera_active),
+        alert: pending_alert(cal, now, prev_tick, camera_active, dismissed),
         sleep: sleep_duration(cal, now),
     }
 }
@@ -67,14 +74,19 @@ pub fn fire_alert(event: &NextEvent, minutes: i64, camera_active: bool, eleven_l
 /// The alert whose scheduled instant (start + k minutes, k = 0..10) lies in
 /// `(prev_tick, now]`, if any. Only the latest such instant fires (a tick
 /// covering several missed instants alerts once); nags after the start alert
-/// stop once the user is on the call.
+/// stop once the user is on the call, and a dismissed call never alerts.
 fn pending_alert(
     cal: &Cal,
     now: DateTime<Utc>,
     prev_tick: DateTime<Utc>,
     camera_active: bool,
+    dismissed: Option<DateTime<Utc>>,
 ) -> Option<(NextEvent, i64)> {
     let event = cal.next_call.as_ref()?;
+    if dismissed == Some(event.start_time) {
+        // user hit "Dismiss" for this call: mute its whole alert window
+        return None;
+    }
     let since_start = now.signed_duration_since(event.start_time);
     if since_start < TimeDelta::zero() {
         // not started: num_minutes() truncates toward zero, so a tick in the
@@ -212,7 +224,7 @@ mod tests {
     #[test]
     fn alert_fires_when_instant_crossed() {
         // event started exactly at `now`; prev tick 5s earlier
-        let step = step(&cal(0), now(), now() - secs(5), false);
+        let step = step(&cal(0), now(), now() - secs(5), false, None);
         assert_eq!(step.alert.as_ref().unwrap().1, 0);
     }
 
@@ -226,40 +238,54 @@ mod tests {
                 ..event(0)
             }),
         };
-        let step = step(&c, now(), start, false);
+        let step = step(&c, now(), start, false, None);
         assert!(step.alert.is_none());
     }
 
     #[test]
     fn late_tick_still_fires_crossed_instant() {
         // say-blocked: tick arrives 20s after the +1 minute instant
-        let step = step(&cal(-1), now() + secs(20), now() - secs(45), false);
+        let step = step(&cal(-1), now() + secs(20), now() - secs(45), false, None);
         assert_eq!(step.alert.as_ref().unwrap().1, 1);
     }
 
     #[test]
     fn multiple_crossed_instants_fire_once_with_latest() {
         // a huge gap (laptop asleep) covering the +0..+3 instants: only +3 fires
-        let step = step(&cal(-3), now(), now() - TimeDelta::minutes(10), false);
+        let step = step(&cal(-3), now(), now() - TimeDelta::minutes(10), false, None);
         assert_eq!(step.alert.as_ref().unwrap().1, 3);
     }
 
     #[test]
     fn restart_fires_nothing_then_next_minute() {
         // startup at +2:30: prev_tick == now, nothing fires...
-        let step_at_start = step(&cal(-2), now() + secs(30), now() + secs(30), false);
+        let step_at_start = step(&cal(-2), now() + secs(30), now() + secs(30), false, None);
         assert!(step_at_start.alert.is_none());
         // ...but the +3 instant fires on the tick that crosses it
-        let step_next = step(&cal(-2), now() + secs(62), now() + secs(30), false);
+        let step_next = step(&cal(-2), now() + secs(62), now() + secs(30), false, None);
         assert_eq!(step_next.alert.as_ref().unwrap().1, 3);
     }
 
     #[test]
     fn camera_suppresses_nags_but_not_start() {
-        let fired = step(&cal(0), now(), now() - secs(5), true);
+        let fired = step(&cal(0), now(), now() - secs(5), true, None);
         assert_eq!(fired.alert.as_ref().unwrap().1, 0, "start alert fires despite camera");
-        let nag = step(&cal(-2), now(), now() - secs(5), true);
+        let nag = step(&cal(-2), now(), now() - secs(5), true, None);
         assert!(nag.alert.is_none(), "nag suppressed while on the call");
+    }
+
+    #[test]
+    fn dismissed_call_never_alerts() {
+        // start alert and nags are both suppressed for the dismissed call
+        let start_alert = step(&cal(0), now(), now() - secs(5), false, Some(event(0).start_time));
+        assert!(start_alert.alert.is_none(), "start alert suppressed");
+        let nag = step(&cal(-2), now(), now() - secs(5), false, Some(event(-2).start_time));
+        assert!(nag.alert.is_none(), "nag suppressed");
+        // only alerts are muted: the countdown display is untouched
+        assert_eq!(nag.title, "-2");
+        // a dismissal for some other call does not suppress this one
+        let other = step(&cal(0), now(), now() - secs(5), false, Some(event(-30).start_time));
+        assert!(other.alert.is_some(), "other call's dismissal ignored");
     }
 
     #[test]
@@ -272,21 +298,21 @@ mod tests {
                 ..event(0)
             }),
         };
-        let step = step(&c, now(), now() - secs(60), false);
+        let step = step(&c, now(), now() - secs(60), false, None);
         assert!(step.alert.is_none());
     }
 
     #[test]
     fn no_alerts_after_window() {
         // +10 minutes: outside the 0..10 alert window
-        let step = step(&cal(-10), now(), now() - secs(5), false);
+        let step = step(&cal(-10), now(), now() - secs(5), false, None);
         assert!(step.alert.is_none());
     }
 
     #[test]
     fn display_states() {
-        assert_eq!(step(&Cal::default(), now(), now(), false).title, "...");
-        assert_eq!(step(&cal(90), now(), now(), false).title, "...");
+        assert_eq!(step(&Cal::default(), now(), now(), false, None).title, "...");
+        assert_eq!(step(&cal(90), now(), now(), false, None).title, "...");
         // rounds to the nearest minute: 58m40s away shows "59"...
         let c = Cal {
             next_call: Some(NextEvent {
@@ -294,7 +320,7 @@ mod tests {
                 ..event(0)
             }),
         };
-        assert_eq!(step(&c, now(), now(), false).title, "59");
+        assert_eq!(step(&c, now(), now(), false, None).title, "59");
         // ...and 59m20s away shows "59" too (rounded down)
         let c = Cal {
             next_call: Some(NextEvent {
@@ -302,7 +328,7 @@ mod tests {
                 ..event(0)
             }),
         };
-        assert_eq!(step(&c, now(), now(), false).title, "59");
+        assert_eq!(step(&c, now(), now(), false, None).title, "59");
         // negative countdown rounds: 2m36s ago shows "-3"
         let c = Cal {
             next_call: Some(NextEvent {
@@ -310,16 +336,19 @@ mod tests {
                 ..event(0)
             }),
         };
-        assert_eq!(step(&c, now(), now(), false).title, "-3");
+        assert_eq!(step(&c, now(), now(), false, None).title, "-3");
         // camera state doesn't affect the icon (it only gates alerts/speech)
-        assert_eq!(step(&cal(-2), now(), now(), true).title, "-2");
-        assert_eq!(step(&cal(30), now(), now(), true).title, "30");
+        assert_eq!(step(&cal(-2), now(), now(), true, None).title, "-2");
+        assert_eq!(step(&cal(30), now(), now(), true, None).title, "30");
     }
 
     #[test]
     fn sleep_durations() {
         // nothing upcoming: idle cap
-        assert_eq!(step(&Cal::default(), now(), now(), false).sleep, DEFAULT_CHECK_INTERVAL);
+        assert_eq!(
+            step(&Cal::default(), now(), now(), false, None).sleep,
+            DEFAULT_CHECK_INTERVAL
+        );
         // 90s to start: countdown showing, wake at the next top-of-minute
         let c = Cal {
             next_call: Some(NextEvent {
@@ -327,7 +356,7 @@ mod tests {
                 ..event(0)
             }),
         };
-        assert_eq!(step(&c, now(), now(), false).sleep, Duration::from_secs(60));
+        assert_eq!(step(&c, now(), now(), false, None).sleep, Duration::from_secs(60));
         // 30s to start: wake exactly at start
         let c = Cal {
             next_call: Some(NextEvent {
@@ -335,13 +364,16 @@ mod tests {
                 ..event(0)
             }),
         };
-        assert_eq!(step(&c, now(), now(), false).sleep, Duration::from_secs(30));
+        assert_eq!(step(&c, now(), now(), false, None).sleep, Duration::from_secs(30));
         // 65 min away: idle cap applies, but the hour-out boundary is never
         // overshot - a later tick at 62 min away sleeps exactly 2 min
-        assert_eq!(step(&cal(65), now(), now(), false).sleep, DEFAULT_CHECK_INTERVAL);
-        assert_eq!(step(&cal(62), now(), now(), false).sleep, Duration::from_secs(2 * 60));
+        assert_eq!(step(&cal(65), now(), now(), false, None).sleep, DEFAULT_CHECK_INTERVAL);
+        assert_eq!(
+            step(&cal(62), now(), now(), false, None).sleep,
+            Duration::from_secs(2 * 60)
+        );
         // started 2 min ago: wake at the next minute boundary from start (+3)
-        assert_eq!(step(&cal(-2), now(), now(), false).sleep, Duration::from_secs(60));
+        assert_eq!(step(&cal(-2), now(), now(), false, None).sleep, Duration::from_secs(60));
         // waking exactly on a boundary: the 1s floor guards zero-length sleeps
         let c = Cal {
             next_call: Some(NextEvent {
@@ -349,19 +381,22 @@ mod tests {
                 ..event(0)
             }),
         };
-        assert!(step(&c, now(), now() - secs(5), false).sleep >= Duration::from_secs(1));
+        assert!(step(&c, now(), now() - secs(5), false, None).sleep >= Duration::from_secs(1));
     }
 
     #[test]
     fn status_lines() {
-        assert_eq!(step(&Cal::default(), now(), now(), false).status, "No upcoming calls");
+        assert_eq!(
+            step(&Cal::default(), now(), now(), false, None).status,
+            "No upcoming calls"
+        );
         assert!(
-            step(&cal(30), now(), now(), false)
+            step(&cal(30), now(), now(), false, None)
                 .status
                 .starts_with("Next: standup at ")
         );
         assert!(
-            step(&cal(-2), now(), now(), false)
+            step(&cal(-2), now(), now(), false, None)
                 .status
                 .starts_with("In progress: standup (started ")
         );

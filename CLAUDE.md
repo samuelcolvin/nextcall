@@ -68,13 +68,14 @@ All macOS interaction is implemented in Objective-C (`src/native/*.m`), exposed 
 ### Main Entry Point (`src/main.rs`)
 The main thread runs the AppKit event loop (`tray::run`, never returns; the "Quit" menu item terminates the process). Before that it loads config, registers for notifications, and spawns the background loop, which is almost stateless — its only state is the `CalendarFeed` cache and the previous tick's timestamp:
 1. Ask the feed for the calendar (cached; network at most once per TTL), ~10s before the scheduled tick so fetch latency never delays an alert
-2. Let the pure `logic::step(cal, now, prev_tick, camera_active)` decide display, status, alert and sleep
+2. Read the tray's dismiss toggle and the camera state, then let the pure `logic::step(cal, now, prev_tick, camera_active, dismissed)` decide display, status, alert and sleep
 3. Apply the side effects (tray, notification + speech) and sleep until the next tick (wall-clock deadlines, so system sleep and blocking speech don't skew the schedule)
 
 ### Core Business Logic (`src/logic.rs`)
-`step()` is a pure function of `(cal, now, prev_tick, camera_active)` — no clock, no IO — returning what the tray shows, the menu status line, an alert if one is due, and how long to sleep. Key rules:
+`step()` is a pure function of `(cal, now, prev_tick, camera_active, dismissed)` — no clock, no IO — returning what the tray shows, the menu status line, an alert if one is due, and how long to sleep. Key rules:
 - **Alerts are boundary crossings**: alert instants are start + k minutes (k = 0..10); one fires iff it lies in `(prev_tick, now]` — exactly-once by construction, no dedup state. Nags (k ≥ 1) are suppressed once the camera is active; the start alert always notifies (speech stays camera-gated)
-- Display: a positive countdown to an upcoming call (≤1h away), the negative minutes since it started, or "..."
+- **Dismiss**: the tray menu's "Dismiss" item mutes all alerts for the current call, and flips to "Revert dismiss" to undo. The tray owns the toggle (and renders it instantly); like the camera, the main loop just polls it each tick (`tray::dismissed_ts`) and passes the start time to `step` as `dismissed` only if it matches `next_call` — so a stale dismissal (the call changed while the loop slept) can never mute a different call. Arming the item each tick (`tray_set_dismiss_target` with `next_call`'s start unix time; 0 disables it) also expires a stale dismissal
+- Display: a positive countdown to an upcoming call (≤1h away), the negative minutes since it started, or "..." (dismissed-state rendering — the monochrome bell.slash SF Symbol — is owned by the tray, not `step`)
 - Sleep: min of next alert instant, event start, start − 1h, and top-of-minute during a countdown; capped at 180s, floored at 1s
 - `fire_alert` (side-effectful, called by main) sends the notification and camera-gated speech
 
@@ -102,7 +103,7 @@ Dual implementation:
 - macOS built-in `say` command with "Moira" voice as fallback
 
 ### Tray Icon (`src/tray.rs` + `src/native/tray.m`)
-An AppKit `NSStatusItem` whose title is the countdown text — no image rendering involved. `tray_set_title`/`tray_set_status`/`tray_set_log_path` are thread-safe (dispatch to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns.
+An AppKit `NSStatusItem` whose title is the countdown text — the only image is the SF Symbol bell shown while dismissed. A single `render()` derives the display (title, bell icon, Dismiss/Revert item title) from the last title and the dismiss toggle, which the tray owns; `tray_set_dismiss_target`/`tray_dismissed_ts` are the atomics Rust arms/polls each tick. `tray_set_title`/`tray_set_status`/`tray_set_log_path` are thread-safe (dispatch to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns.
 
 ### Build Configuration (`build.rs`)
 Compiles `src/native/*.m` with the `cc` crate (ARC enabled) and links the required frameworks: Foundation, AppKit, UserNotifications, CoreMediaIO.
