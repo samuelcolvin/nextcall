@@ -7,20 +7,17 @@ export CARGO_TERM_COLOR=$(shell (test -t 0 && echo "always") || echo "auto")
 # Where `make install` puts the app. Override with `make install PREFIX=~/Applications`.
 PREFIX := /Applications
 
-.PHONY: build  ## Build binary and app
-build:
-	./build.sh
-
-.PHONY: install  ## Build and install Nextcall.app to $(PREFIX), replacing any old copy
-install: build
-	@killall nextcall 2>/dev/null || true
+.PHONY: install  ## Build and install Nextcall.app to $(PREFIX)
+install:
+	./build.sh dist
+	@pkill -f "$(PREFIX)/Nextcall.app/Contents/MacOS/nextcall" 2>/dev/null || true
 	@mkdir -p $(PREFIX)
 	rm -rf $(PREFIX)/Nextcall.app
-	cp -R Nextcall.app $(PREFIX)/Nextcall.app
+	mv Nextcall.app $(PREFIX)/Nextcall.app
 	@echo "Installed $(PREFIX)/Nextcall.app — launch with: open $(PREFIX)/Nextcall.app"
 
-.PHONY: run  ## Build and run the app in the foreground (logs to terminal, Ctrl-C to quit)
-run:
+.PHONY: dev  ## Build and run the dev app in the foreground (logs to terminal, Ctrl-C to quit)
+dev:
 	./run.sh
 
 .PHONY: format  ## Auto-format rust and python source files

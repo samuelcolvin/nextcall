@@ -1,7 +1,8 @@
 /target/
 /scratch/
 /.claude/
-NextCall.app/
+/Nextcall.app/
+/nextcall_dev.app/
 **/.DS_Store
 /nextcall.toml
 /
