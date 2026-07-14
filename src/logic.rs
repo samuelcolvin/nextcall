@@ -56,7 +56,7 @@ pub fn fire_alert(event: &NextEvent, minutes: i64, camera_active: bool, eleven_l
     );
     let started_description: Cow<'static, str> = match minutes {
         0 => "has started".into(),
-        2 => "started two minutes ago, join it now!".into(),
+        1 => "started one minute ago, join it now!".into(),
         _ => format!("started {minutes} minutes ago, join it now!").into(),
     };
     notifications::send(
@@ -110,8 +110,9 @@ fn pending_alert(
     Some((event.clone(), minutes))
 }
 
-/// The menu bar text: minutes until the next call while it is within an hour
-/// or since it started (negative), rounded to the nearest minute; else "...".
+/// The menu bar text: minutes until the next call (rounded to the nearest
+/// minute) while it is within an hour, or whole minutes since it started
+/// (negative, truncated - matching "started N minutes ago"); else "...".
 fn tray_title(cal: &Cal, now: DateTime<Utc>) -> Cow<'static, str> {
     let until_start = cal
         .next_call
@@ -123,8 +124,9 @@ fn tray_title(cal: &Cal, now: DateTime<Utc>) -> Cow<'static, str> {
         Some(until) if until >= TimeDelta::zero() && until <= TimeDelta::hours(1) => {
             (((until.as_seconds_f32() / 60.0).round() as i32).to_string()).into()
         }
-        // negative countdown, also rounded (e.g. -2.6 -> "-3")
-        Some(until) if until < TimeDelta::zero() => format!("{:.0}", until.as_seconds_f32() / 60.0).into(),
+        // elapsed minutes truncate (a call 1m59s in "started 1 minute ago",
+        // so "-1"); formatted by hand so the first minute shows "-0"
+        Some(until) if until < TimeDelta::zero() => format!("-{}", (-until).num_minutes()).into(),
         _ => "...".into(),
     }
 }
@@ -329,14 +331,29 @@ mod tests {
             }),
         };
         assert_eq!(step(&c, now(), now(), false, None).title, "59");
-        // negative countdown rounds: 2m36s ago shows "-3"
+        // elapsed time truncates: 2m36s ago still "started 2 minutes ago"
         let c = Cal {
             next_call: Some(NextEvent {
                 start_time: now() - secs(156),
                 ..event(0)
             }),
         };
-        assert_eq!(step(&c, now(), now(), false, None).title, "-3");
+        assert_eq!(step(&c, now(), now(), false, None).title, "-2");
+        // ...even 1m59s ago is "-1", and the first minute shows "-0"
+        let c = Cal {
+            next_call: Some(NextEvent {
+                start_time: now() - secs(119),
+                ..event(0)
+            }),
+        };
+        assert_eq!(step(&c, now(), now(), false, None).title, "-1");
+        let c = Cal {
+            next_call: Some(NextEvent {
+                start_time: now() - secs(30),
+                ..event(0)
+            }),
+        };
+        assert_eq!(step(&c, now(), now(), false, None).title, "-0");
         // camera state doesn't affect the icon (it only gates alerts/speech)
         assert_eq!(step(&cal(-2), now(), now(), true, None).title, "-2");
         assert_eq!(step(&cal(30), now(), now(), true, None).title, "30");

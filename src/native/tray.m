@@ -118,7 +118,7 @@ void tray_run(void) {
                                                   keyEquivalent:@""];
         viewLog.target = gMenuActions;
         [menu addItem:viewLog];
-        NSMenuItem *github = [[NSMenuItem alloc] initWithTitle:@"About nextcall"
+        NSMenuItem *github = [[NSMenuItem alloc] initWithTitle:@"About Nextcall"
                                                         action:@selector(openGitHub:)
                                                  keyEquivalent:@""];
         github.target = gMenuActions;
@@ -190,4 +190,3 @@ void tray_set_log_path(const char *path) {
         });
     }
 }
-
