@@ -11,8 +11,10 @@ use tracing::error;
 /// Rewrite rules making calendar-title shorthand pronounceable, applied in
 /// order (`w/` must precede the bare-slash rule). Spoken text only — the
 /// notification and tray keep the literal title.
-static TTS_RULES: LazyLock<[(Regex, &'static str); 6]> = LazyLock::new(|| {
+static TTS_RULES: LazyLock<[(Regex, &'static str); 7]> = LazyLock::new(|| {
     [
+        // strip quotes: the spoken message wraps the summary in its own
+        (Regex::new(r#"["“”]"#).unwrap(), ""),
         // "1:1" / "1-1" / "2:1" -> "1 to 1" etc; the boundaries keep clock
         // times like "9:05" or "10:30" untouched
         (Regex::new(r"\b(\d)[:-](\d)\b").unwrap(), "$1 to $2"),
@@ -130,6 +132,11 @@ mod tests {
         assert_eq!(tts_friendly("(F2F) / Acme"), "(F2F) and Acme");
         // pipe becomes a pause
         assert_eq!(tts_friendly("Zoom: Acme Sync | Monthly"), "Zoom: Acme Sync, Monthly");
+        // straight and curly quotes are stripped (the message adds its own)
+        assert_eq!(
+            tts_friendly(r#"“Vibes” review with "the team""#),
+            "Vibes review with the team"
+        );
     }
 
     /// Clock times, dates and ampersands must pass through unchanged.

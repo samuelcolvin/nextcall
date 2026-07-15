@@ -67,7 +67,7 @@ pub fn fire_alert(event: &NextEvent, minutes: i64, camera_active: bool, eleven_l
     );
     if !camera_active {
         let summary = say::tts_friendly(sayevent_summary(event));
-        let message = format!("Your call {summary:?} {started_description}");
+        let message = format!(r#"Your call "{summary}" {started_description}"#);
         let _ = say::say(&message, eleven_labs_key);
     }
 }
