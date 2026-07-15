@@ -98,7 +98,7 @@ Uses the CoreMediaIO hardware C API to detect if the camera is active:
 - Prevents notifications from interrupting if camera is already in use
 
 ### Text-to-Speech (`src/say.rs`)
-Dual implementation:
+`tts_friendly` rewrites calendar shorthand in the spoken summary so TTS pronounces it sensibly ("1:1" → "1 to 1", "<>" / name slashes → "and", "w/" → "with", "|" → a pause); notifications and the tray keep the literal title. Dual implementation:
 - ElevenLabs API (if `eleven_labs_key` is configured) - uses `rodio` for audio playback
 - macOS built-in `say` command with "Moira" voice as fallback
 

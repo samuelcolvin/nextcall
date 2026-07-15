@@ -1,10 +1,47 @@
 use anyhow::Result as AnyhowResult;
 use bytes::Bytes;
+use regex::Regex;
 use rodio::OutputStreamBuilder;
 use std::io::{BufReader, Cursor};
 use std::process::Command;
+use std::sync::LazyLock;
 use std::time::Duration;
 use tracing::error;
+
+/// Rewrite rules making calendar-title shorthand pronounceable, applied in
+/// order (`w/` must precede the bare-slash rule). Spoken text only — the
+/// notification and tray keep the literal title.
+static TTS_RULES: LazyLock<[(Regex, &'static str); 6]> = LazyLock::new(|| {
+    [
+        // "1:1" / "1-1" / "2:1" -> "1 to 1" etc; the boundaries keep clock
+        // times like "9:05" or "10:30" untouched
+        (Regex::new(r"\b(\d)[:-](\d)\b").unwrap(), "$1 to $2"),
+        // "121 Bob" -> "one to one Bob"
+        (Regex::new(r"\b121\b").unwrap(), "one to one"),
+        // "Alice <> Bob" / "Acme <-> Dave" -> "and"
+        (Regex::new(r"\s*<-?>\s*").unwrap(), " and "),
+        // "w/Eve" -> "with Eve"
+        (Regex::new(r"(?i)\bw/\s*").unwrap(), "with "),
+        // "Alice / Bob", "Alice // Bob" -> "and"; requires a letter on
+        // both sides so dates ("7/29") and times stay untouched
+        (Regex::new(r"(?i)([a-z)])\s*//?\s*([a-z(])").unwrap(), "$1 and $2"),
+        // "Sync | Monthly" -> a comma pause
+        (Regex::new(r"\s*\|\s*").unwrap(), ", "),
+    ]
+});
+
+/// Rewrites an event summary so ElevenLabs (and `say`) pronounce common
+/// calendar shorthand sensibly, e.g. "Alice/Bob 1:1" -> "Alice and Bob
+/// 1 to 1". See [`TTS_RULES`] for the full list.
+pub fn tts_friendly(summary: &str) -> String {
+    let mut text = summary.to_string();
+    for (regex, replacement) in TTS_RULES.iter() {
+        if let std::borrow::Cow::Owned(replaced) = regex.replace_all(&text, *replacement) {
+            text = replaced;
+        }
+    }
+    text
+}
 
 pub fn say(text: &str, eleven_labs_key: Option<&str>) -> AnyhowResult<()> {
     if let Some(api_key) = eleven_labs_key {
@@ -68,4 +105,40 @@ fn eleven_labs_request(text: &str, api_key: &str) -> AnyhowResult<Bytes> {
         return Err(anyhow::anyhow!("Unexpected status code: {}", response.status()));
     }
     Ok(response.bytes()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tts_friendly;
+
+    /// One case per rewrite rule, using calendar-shaped titles.
+    #[test]
+    fn tts_friendly_rules() {
+        // digit:digit, and slash between names
+        assert_eq!(tts_friendly("Alice/Bob 1:1"), "Alice and Bob 1 to 1");
+        assert_eq!(tts_friendly("2:1 - Charlie : Alice"), "2 to 1 - Charlie : Alice");
+        assert_eq!(tts_friendly("Alice / Bob 1-1"), "Alice and Bob 1 to 1");
+        // bare 121
+        assert_eq!(tts_friendly("121 Bob M"), "one to one Bob M");
+        // <> and <->, chained
+        assert_eq!(tts_friendly("Alice <> Bob <> Charlie"), "Alice and Bob and Charlie");
+        assert_eq!(tts_friendly("Acme <-> Dave"), "Acme and Dave");
+        // w/ must win over the bare-slash rule
+        assert_eq!(tts_friendly("Coffee w/Eve"), "Coffee with Eve");
+        // double slash, and parens adjacent to a slash
+        assert_eq!(tts_friendly("Alice // Bob"), "Alice and Bob");
+        assert_eq!(tts_friendly("(F2F) / Acme"), "(F2F) and Acme");
+        // pipe becomes a pause
+        assert_eq!(tts_friendly("Zoom: Acme Sync | Monthly"), "Zoom: Acme Sync, Monthly");
+    }
+
+    /// Clock times, dates and ampersands must pass through unchanged.
+    #[test]
+    fn tts_friendly_untouched() {
+        assert_eq!(tts_friendly("9:05pm BA Flight"), "9:05pm BA Flight");
+        assert_eq!(tts_friendly("10:30 am BST"), "10:30 am BST");
+        assert_eq!(tts_friendly("Dryrun for 7/29 workshop"), "Dryrun for 7/29 workshop");
+        assert_eq!(tts_friendly("Monthly Sales Q&A"), "Monthly Sales Q&A");
+        assert_eq!(tts_friendly("Engineering Sync"), "Engineering Sync");
+    }
 }
