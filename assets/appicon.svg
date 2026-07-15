@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- App bundle icon: the logo.svg glyph in white on a dark rounded plate.
+       Rendered to AppIcon.icns by make-icons.sh; keep the glyph in sync with logo.svg. -->
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A3345"/>
+      <stop offset="1" stop-color="#131826"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#plate)"/>
+  <g fill="#FFFFFF" transform="translate(512 516) scale(0.62) translate(-512 -508)">
+    <rect x="432" y="80" width="160" height="76" rx="32"/>
+    <rect x="472" y="140" width="80" height="140" rx="30"/>
+    <rect x="749" y="237" width="64" height="140" rx="28" transform="rotate(45 781 307)"/>
+    <rect x="211" y="237" width="64" height="140" rx="28" transform="rotate(-45 243 307)"/>
+    <path fill-rule="evenodd" d="
+      M 872 576 A 360 360 0 1 0 152 576 A 360 360 0 1 0 872 576 Z
+      M 782 576 A 270 270 0 1 0 242 576 A 270 270 0 1 0 782 576 Z
+      M 722 576 A 210 210 0 1 0 302 576 A 210 210 0 1 0 722 576 Z
+      M 494 502 A 50 50 0 1 0 394 502 A 50 50 0 1 0 494 502 Z"/>
+  </g>
+</svg>

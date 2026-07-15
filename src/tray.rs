@@ -1,9 +1,10 @@
 //! Menu bar status item, backed by the ObjC implementation in
 //! `src/native/tray.m` (AppKit `NSStatusItem`).
 //!
-//! The countdown is plain text; the menu has a status line plus "Dismiss"
-//! (toggles to "Revert dismiss"), "View Log", "About nextcall" and "Quit".
-//! The tray owns the dismiss toggle; Rust polls [`dismissed_ts`] each tick.
+//! The countdown is plain text (the idle "..." renders as the logo glyph);
+//! the menu has a status line plus "Dismiss" (toggles to "Revert dismiss"),
+//! "View Log", "About nextcall" and "Quit". The tray owns the dismiss
+//! toggle; Rust polls [`dismissed_ts`] each tick.
 
 use std::ffi::{CString, c_char};
 
@@ -57,8 +58,9 @@ pub fn dismissed_ts() -> Option<i64> {
     }
 }
 
-/// Sets the menu bar text (e.g. "5", "-2", "..."). Thread-safe: the update is
-/// dispatched to the main queue, and is queued if called before [`run`].
+/// Sets the menu bar text (e.g. "5", "-2", "..."). The tray renders the idle
+/// "..." as the logo glyph rather than literal text. Thread-safe: the update
+/// is dispatched to the main queue, and is queued if called before [`run`].
 pub fn set_title(title: &str) {
     // Interior NULs can't occur in the countdown strings we generate; skip the
     // update rather than panicking if that ever changes.

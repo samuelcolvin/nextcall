@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- monotone template glyph: solid stopwatch, transparent ring separates rim from lens core -->
+  <g fill="#000000">
+    <rect x="432" y="80" width="160" height="76" rx="32"/>
+    <rect x="472" y="140" width="80" height="140" rx="30"/>
+    <rect x="749" y="237" width="64" height="140" rx="28" transform="rotate(45 781 307)"/>
+    <rect x="211" y="237" width="64" height="140" rx="28" transform="rotate(-45 243 307)"/>
+    <path fill-rule="evenodd" d="
+      M 872 576 A 360 360 0 1 0 152 576 A 360 360 0 1 0 872 576 Z
+      M 782 576 A 270 270 0 1 0 242 576 A 270 270 0 1 0 782 576 Z
+      M 722 576 A 210 210 0 1 0 302 576 A 210 210 0 1 0 722 576 Z
+      M 494 502 A 50 50 0 1 0 394 502 A 50 50 0 1 0 494 502 Z"/>
+  </g>
+</svg>

@@ -1,8 +1,9 @@
 // Menu bar status item and AppKit run loop.
 //
 // Replaces the old winit + tray-icon + rendered-PNG approach: NSStatusItem
-// displays plain text natively, so the countdown is just a title string.
-// Exposed to Rust as tray_run / tray_set_title (declared in src/tray.rs).
+// displays plain text natively, so the countdown is just a title string. The
+// only images are template glyphs: the logo while idle, bell.slash while
+// dismissed. Exposed to Rust as tray_run / tray_set_title (src/tray.rs).
 #import <AppKit/AppKit.h>
 #import <stdatomic.h>
 #import <stdbool.h>
@@ -23,19 +24,28 @@ static NSStatusItem *gStatusItem = nil;
 static NSMenuItem *gDismissMenuItem = nil;
 // Last raw countdown text from Rust; render() derives the display from it.
 static NSString *gTitle = @"...";
+// The stopwatch-lens logo (assets/tray-icon.png in Resources), shown instead
+// of the idle "..." text; nil outside a bundle, which falls back to "...".
+static NSImage *gIdleIcon = nil;
 
 // Renders the status item and Dismiss menu item from (gTitle, gDismissedTs) —
 // the one place display state is applied, called when either input changes.
 // Main thread only.
 static void render(void) {
     bool dismissed = atomic_load(&gDismissedTs) != 0;
+    bool idle = [gTitle isEqualToString:@"..."];
     if (dismissed) {
         // the muted bell joins the countdown, or alone replaces the idle "..."
-        gStatusItem.button.title = [gTitle isEqualToString:@"..."] ? @"" : gTitle;
+        gStatusItem.button.title = idle ? @"" : gTitle;
         // SF Symbol = monochrome template image, follows menu bar light/dark
         gStatusItem.button.image = [NSImage imageWithSystemSymbolName:@"bell.slash"
                                              accessibilityDescription:@"alerts dismissed"];
         gStatusItem.button.imagePosition = NSImageLeft;
+    } else if (idle && gIdleIcon != nil) {
+        // no upcoming call: show the logo rather than "..."
+        gStatusItem.button.title = @"";
+        gStatusItem.button.image = gIdleIcon;
+        gStatusItem.button.imagePosition = NSImageOnly;
     } else {
         gStatusItem.button.title = gTitle;
         gStatusItem.button.image = nil;
@@ -101,7 +111,13 @@ void tray_run(void) {
         [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
         gStatusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-        gStatusItem.button.title = @"...";
+
+        // Template image: menu bar recolors it for light/dark. 36px PNG shown
+        // at 18pt, i.e. @2x. Nil-safe: property sets on nil are no-ops.
+        gIdleIcon = [[NSBundle mainBundle] imageForResource:@"tray-icon"];
+        gIdleIcon.size = NSMakeSize(18, 18);
+        gIdleIcon.template = YES;
+        render();
 
         gMenuActions = [[NCMenuActions alloc] init];
         NSMenu *menu = [[NSMenu alloc] init];

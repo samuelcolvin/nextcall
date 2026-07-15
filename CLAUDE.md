@@ -103,10 +103,13 @@ Dual implementation:
 - macOS built-in `say` command with "Moira" voice as fallback
 
 ### Tray Icon (`src/tray.rs` + `src/native/tray.m`)
-An AppKit `NSStatusItem` whose title is the countdown text — the only image is the SF Symbol bell shown while dismissed. A single `render()` derives the display (title, bell icon, Dismiss/Revert item title) from the last title and the dismiss toggle, which the tray owns; `tray_set_dismiss_target`/`tray_dismissed_ts` are the atomics Rust arms/polls each tick. `tray_set_title`/`tray_set_status`/`tray_set_log_path` are thread-safe (dispatch to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns.
+An AppKit `NSStatusItem` whose title is the countdown text — the only images are template glyphs: the stopwatch-lens logo while idle (the "..." title, loaded from `tray-icon.png` in Resources) and the SF Symbol bell while dismissed. A single `render()` derives the display (title, bell icon, Dismiss/Revert item title) from the last title and the dismiss toggle, which the tray owns; `tray_set_dismiss_target`/`tray_dismissed_ts` are the atomics Rust arms/polls each tick. `tray_set_title`/`tray_set_status`/`tray_set_log_path` are thread-safe (dispatch to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns.
 
 ### Build Configuration (`build.rs`)
 Compiles `src/native/*.m` with the `cc` crate (ARC enabled) and links the required frameworks: Foundation, AppKit, UserNotifications, CoreMediaIO.
+
+### Icons (`assets/`)
+`logo.svg` is the monotone stopwatch-lens logo; `appicon.svg` is the same glyph in white on a dark plate. `assets/make-icons.sh` regenerates the checked-in artifacts (`AppIcon.icns`, `tray-icon.png`) with `sips` + `iconutil` — rerun it whenever the SVGs change. `build.sh` copies the artifacts into `Contents/Resources`.
 
 ## Platform-Specific Notes
 

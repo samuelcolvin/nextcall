@@ -25,6 +25,11 @@ pkill -f "$PWD/$APP_NAME/Contents/MacOS/nextcall" 2>/dev/null || true
 
 cp target/release/nextcall "$APP_NAME/Contents/MacOS/"
 
+# App icon (Finder, Spotlight, notifications) and the tray's idle logo; both
+# generated from assets/*.svg by assets/make-icons.sh and checked in.
+mkdir -p "$APP_NAME/Contents/Resources"
+cp assets/AppIcon.icns assets/tray-icon.png "$APP_NAME/Contents/Resources/"
+
 # Info.plist provides the CFBundleIdentifier that notifications require;
 # stamp this variant's bundle ID and display name into it.
 sed -e "s|<string>com.nextcall.app</string>|<string>$BUNDLE_ID</string>|" \
