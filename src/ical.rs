@@ -369,7 +369,29 @@ fn get_property(event: &IcalEvent, name: &str) -> Option<String> {
         .properties
         .iter()
         .find(|p| p.name == name)
-        .and_then(|p| p.value.clone())
+        .and_then(|p| p.value.as_deref())
+        .map(unescape_text)
+}
+
+/// Undo RFC 5545 TEXT escaping (`\,` `\;` `\\` `\n`/`\N`), which the `ical`
+/// crate leaves in place - otherwise summaries render as "Bill\, Samuel".
+/// Safe on URI-valued properties too: URIs never contain backslashes.
+fn unescape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') | Some('N') => out.push('\n'),
+                // covers `\,` `\;` `\\`; an invalid escape keeps the char
+                Some(escaped) => out.push(escaped),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn get_event_summary(event: &IcalEvent) -> Option<String> {
@@ -452,6 +474,14 @@ mod tests {
             "BEGIN:VEVENT\nDTSTART:20260709T100000Z\nSUMMARY:one-off\n{LINK}END:VEVENT\n"
         ));
         assert_eq!(cal.next_call.unwrap().start_time, utc(2026, 7, 9, 10, 0));
+    }
+
+    #[test]
+    fn summary_unescapes_rfc5545_text() {
+        let cal = parse(&format!(
+            "BEGIN:VEVENT\nDTSTART:20260709T100000Z\nSUMMARY:Bill\\, Samuel \\; co\\\\ two\n{LINK}END:VEVENT\n"
+        ));
+        assert_eq!(cal.next_call.unwrap().summary, r"Bill, Samuel ; co\ two");
     }
 
     #[test]
