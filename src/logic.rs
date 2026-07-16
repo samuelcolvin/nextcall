@@ -55,7 +55,7 @@ pub fn fire_alert(event: &NextEvent, minutes: i64, camera_active: bool, eleven_l
         event.summary
     );
     let started_description: Cow<'static, str> = match minutes {
-        0 => "has started".into(),
+        0 => "is starting now".into(),
         1 => "started one minute ago, join it now!".into(),
         _ => format!("started {minutes} minutes ago, join it now!").into(),
     };
