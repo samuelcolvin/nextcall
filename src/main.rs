@@ -69,7 +69,7 @@ fn init_logging() -> AnyhowResult<String> {
 /// Logs a fatal error, surfaces it as a notification, and exits.
 fn fatal(subtitle: &str, message: &str) -> ! {
     error!("Fatal error: {message}");
-    notifications::send("NextCall Configuration", Some(subtitle), message, None);
+    notifications::send("Nextcall Configuration", Some(subtitle), message, None);
     std::process::exit(1);
 }
 
@@ -79,7 +79,7 @@ fn main() {
         Err(e) => eprintln!("Failed to initialize logging: {}", e),
     }
 
-    info!("NextCall starting up");
+    info!("Nextcall starting up");
 
     notifications::startup();
 

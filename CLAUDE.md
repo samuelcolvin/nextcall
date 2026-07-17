@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-NextCall is a macOS menu bar application written in Rust that monitors your calendar for upcoming video calls and provides timely notifications. It displays a countdown in the system tray and sends alerts when meetings are about to start or are already in progress. Notifications use both system Notifications and audio announcement.
+Nextcall is a macOS menu bar application written in Rust that monitors your calendar for upcoming video calls and provides timely notifications. It displays a countdown in the system tray and sends alerts when meetings are about to start or are already in progress. Notifications use both system Notifications and audio announcement.
 
 ### Docstrings and comments.
 
@@ -109,7 +109,7 @@ An AppKit `NSStatusItem` whose title is the countdown text — the only images a
 Compiles `src/native/*.m` with the `cc` crate (ARC enabled) and links the required frameworks: Foundation, AppKit, UserNotifications, CoreMediaIO.
 
 ### Icons (`assets/`)
-`logo.svg` is the monotone stopwatch-lens logo; `appicon.svg` is the same glyph in white on a dark plate. `assets/make-icons.sh` regenerates the checked-in artifacts (`AppIcon.icns`, `tray-icon.png`) with `sips` + `iconutil` — rerun it whenever the SVGs change. `build.sh` copies the artifacts into `Contents/Resources`.
+`logo.svg` is the monotone stopwatch-lens logo (black); `logo-white.svg` is the same glyph in white, used as the README's dark-mode `<picture>` source; `appicon.svg` is the glyph in white on a dark plate. `assets/make-icons.sh` regenerates the checked-in artifacts (`AppIcon.icns`, `tray-icon.png`) with `sips` + `iconutil` — rerun it whenever the SVGs change. `build.sh` copies the artifacts into `Contents/Resources`.
 
 ## Platform-Specific Notes
 
