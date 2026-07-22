@@ -1,0 +1,21 @@
+src/native/notifications.m
+  s_1cb02156aca7ad::t_39ef8b742c2a6f 141-145
+CLAUDE.md
+  s_1cb02156aca7ad::t_518602df1cac9f 93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "30da2970145570403453d15f3e076695019581db",
+  "prompts": {},
+  "sessions": {
+    "s_1cb02156aca7ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "361967d7-1f83-4126-a954-888351c1022c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
