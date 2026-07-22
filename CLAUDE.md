@@ -90,6 +90,7 @@ The main thread runs the AppKit event loop (`tray::run`, never returns; the "Qui
 macOS UserNotifications framework integration in Objective-C:
 - `NCNotificationDelegate` handles notification interactions; clicks (including the "Join" button) open the video link via `NSWorkspace`
 - Uses "Blow.aiff" system sound with active interruption level
+- Each send first clears previously delivered notifications, so unanswered alerts never pile up — only the newest is visible
 - Requires notification permissions on first run, and only works from a signed `.app` bundle with a `CFBundleIdentifier`
 
 ### Camera Detection (`src/camera.rs` + `src/native/camera.m`)

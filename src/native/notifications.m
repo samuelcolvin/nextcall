@@ -138,6 +138,11 @@ void notifications_send(const char *title, const char *subtitle, const char *bod
                                                                               trigger:nil];
 
         UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+        // Only the newest alert should be visible: clear any still-unanswered
+        // banners (every delivered notification is ours) before posting. A fresh
+        // identifier is used per alert because replacing a delivered request
+        // in-place does not reliably re-play the sound.
+        [center removeAllDeliveredNotifications];
         [center addNotificationRequest:request
                  withCompletionHandler:^(NSError *_Nullable error) {
                    if (error != nil) {
