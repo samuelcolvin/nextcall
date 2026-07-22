@@ -27,6 +27,27 @@ static NSString *const kJoinAction = @"JOIN_ACTION";
                       UNNotificationPresentationOptionBadge);
 }
 
+// Opens the meeting URL in its default handler, explicitly handing focus over.
+// Clicking the notification body activates nextcall — a windowless accessory
+// app — which can win the activation race against the browser and leave its
+// window frontmost but *inactive* (mouse clicks swallowed, hover broken).
+// activates=YES plus cooperative yielding makes the handoff deterministic.
+static void open_meeting_url(NSURL *nsurl) {
+    NSWorkspace *ws = [NSWorkspace sharedWorkspace];
+    // macOS 14+ cooperative activation: declare that the URL's handler may take
+    // focus from us, otherwise its activation request can be silently refused.
+    if (@available(macOS 14.0, *)) {
+        NSURL *appURL = [ws URLForApplicationToOpenURL:nsurl];
+        NSString *bundleID = appURL != nil ? [NSBundle bundleWithURL:appURL].bundleIdentifier : nil;
+        if (bundleID != nil) {
+            [NSApp yieldActivationToApplicationWithBundleIdentifier:bundleID];
+        }
+    }
+    NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
+    config.activates = YES;
+    [ws openURL:nsurl configuration:config completionHandler:nil];
+}
+
 // Any interaction (banner click or Join button) opens the stored video link.
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
     didReceiveNotificationResponse:(UNNotificationResponse *)response
@@ -35,7 +56,11 @@ static NSString *const kJoinAction = @"JOIN_ACTION";
     if ([url isKindOfClass:[NSString class]]) {
         NSURL *nsurl = [NSURL URLWithString:url];
         if (nsurl != nil) {
-            [[NSWorkspace sharedWorkspace] openURL:nsurl];
+            // Delegate callbacks arrive on a background queue; NSApp
+            // (activation yielding) must be touched on the main thread.
+            dispatch_async(dispatch_get_main_queue(), ^{
+              open_meeting_url(nsurl);
+            });
         }
     }
     completionHandler();
@@ -71,10 +96,12 @@ void notifications_startup(void) {
                                 }
                               }];
 
-        // Foreground action so clicking Join focuses the browser/app it opens.
+        // Background action (options:0): Foreground would activate *nextcall*,
+        // racing the browser's activation from open_meeting_url and leaving the
+        // browser's window frontmost but not accepting mouse input properly.
         UNNotificationAction *join = [UNNotificationAction actionWithIdentifier:kJoinAction
                                                                           title:@"Join"
-                                                                        options:UNNotificationActionOptionForeground];
+                                                                        options:0];
         UNNotificationCategory *category = [UNNotificationCategory categoryWithIdentifier:kMeetingCategory
                                                                                    actions:@[ join ]
                                                                          intentIdentifiers:@[]
