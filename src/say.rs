@@ -5,8 +5,16 @@ use rodio::OutputStreamBuilder;
 use std::io::{BufReader, Cursor};
 use std::process::Command;
 use std::sync::LazyLock;
+use std::thread;
 use std::time::Duration;
 use tracing::error;
+
+use crate::camera;
+
+/// How often playback checks the camera so an announcement is cut short the
+/// moment the user joins the call — long titles must not talk over a live
+/// meeting. Camera checks enumerate devices, so don't poll much faster.
+const CAMERA_POLL: Duration = Duration::from_millis(500);
 
 /// Rewrite rules making calendar-title shorthand pronounceable, applied in
 /// order (`w/` must precede the bare-slash rule). Spoken text only — the
@@ -45,6 +53,9 @@ pub fn tts_friendly(summary: &str) -> String {
     text
 }
 
+/// Speaks `text`, via ElevenLabs when a key is configured, else the macOS
+/// `say` command. Blocks until playback finishes — or is cut short because the
+/// camera came on, i.e. the user joined the call mid-announcement.
 pub fn say(text: &str, eleven_labs_key: Option<&str>) -> AnyhowResult<()> {
     if let Some(api_key) = eleven_labs_key {
         say_eleven_labs(text, api_key)
@@ -53,6 +64,8 @@ pub fn say(text: &str, eleven_labs_key: Option<&str>) -> AnyhowResult<()> {
     }
 }
 
+/// ElevenLabs TTS played through rodio; falls back to [`say_builtin`] if the
+/// API request fails. Playback stops early if the camera becomes active.
 fn say_eleven_labs(text: &str, api_key: &str) -> AnyhowResult<()> {
     // Generate MP3 using ElevenLabs API
     let audio_bytes = match eleven_labs_request(text, api_key) {
@@ -71,17 +84,31 @@ fn say_eleven_labs(text: &str, api_key: &str) -> AnyhowResult<()> {
     let cursor = Cursor::new(audio_bytes);
     let source = BufReader::new(cursor);
 
-    // Play the audio
-    {
-        let sink = rodio::play(stream_handle.mixer(), source)?;
-        // Wait for the sound to finish playing
-        sink.sleep_until_end();
+    // Play the audio, watching the camera so joining the call cuts speech short.
+    let sink = rodio::play(stream_handle.mixer(), source)?;
+    while !sink.empty() {
+        thread::sleep(CAMERA_POLL);
+        if camera::camera_active() {
+            sink.stop();
+            break;
+        }
     }
     Ok(())
 }
 
+/// Built-in fallback via the macOS `say` command; the process is killed if the
+/// camera becomes active mid-utterance.
 fn say_builtin(text: &str) -> AnyhowResult<()> {
-    Command::new("say").arg("-v").arg("Moira").arg(text).spawn()?;
+    let mut child = Command::new("say").arg("-v").arg("Moira").arg(text).spawn()?;
+    while child.try_wait()?.is_none() {
+        thread::sleep(CAMERA_POLL);
+        if camera::camera_active() {
+            let _ = child.kill();
+            // Reap the killed process so it doesn't linger as a zombie.
+            let _ = child.wait();
+            break;
+        }
+    }
     Ok(())
 }
 
