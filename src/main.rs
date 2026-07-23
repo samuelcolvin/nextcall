@@ -127,10 +127,12 @@ fn background(config: config::Config) -> AnyhowResult<()> {
     loop {
         // warm the cache ~FETCH_LEAD before the scheduled tick so network
         // latency never delays it (usually a no-op cache hit)
+        // failures surface as the tray's warning icon (self-clearing on the
+        // next successful fetch) plus a log entry — not a notification
         let fetch_error = feed.fetch(Utc::now());
+        tray::set_warning(fetch_error.is_some());
         if let Some(err) = fetch_error {
-            error!("Error fetching calendar: {err}");
-            notifications::send("Next Call", Some(err.subtitle()), &err.to_string(), None);
+            error!("{}: {err}", err.subtitle());
         }
         sleep_until(scheduled);
 

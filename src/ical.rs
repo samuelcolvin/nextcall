@@ -54,7 +54,7 @@ pub enum CalendarError {
 }
 
 impl CalendarError {
-    /// Short human-readable category, used as the notification subtitle.
+    /// Short human-readable category, used to prefix the fetch-error log line.
     pub fn subtitle(&self) -> &'static str {
         match self {
             Self::HttpStatus(_) => "HTTP error fetching calendar",

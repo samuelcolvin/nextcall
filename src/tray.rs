@@ -15,6 +15,7 @@ unsafe extern "C" {
     fn tray_set_log_path(path: *const c_char);
     fn tray_set_dismiss_target(start_ts: i64);
     fn tray_dismissed_ts() -> i64;
+    fn tray_set_warning(warning: bool);
 }
 
 /// Creates the status item and runs the AppKit event loop. Never returns:
@@ -56,6 +57,14 @@ pub fn dismissed_ts() -> Option<i64> {
         0 => None,
         ts => Some(ts),
     }
+}
+
+/// Shows/hides the warning triangle next to the countdown/logo, indicating
+/// calendar fetches are failing (details go to the log, not a notification).
+/// Call every fetch cycle with the current outcome so the icon self-clears
+/// once requests recover. Thread-safe like [`set_title`].
+pub fn set_warning(warning: bool) {
+    unsafe { tray_set_warning(warning) }
 }
 
 /// Sets the menu bar text (e.g. "5", "-2", "..."). The tray renders the idle
