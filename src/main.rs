@@ -130,10 +130,7 @@ fn background(config: config::Config) -> AnyhowResult<()> {
         // failures surface as the tray's warning icon (self-clearing on the
         // next successful fetch) plus a log entry — not a notification
         let fetch_error = feed.fetch(Utc::now());
-        tray::set_warning(fetch_error.is_some());
-        if let Some(err) = fetch_error {
-            error!("{}: {err}", err.subtitle());
-        }
+        tray::set_warning(fetch_error);
         sleep_until(scheduled);
 
         let now = Utc::now();

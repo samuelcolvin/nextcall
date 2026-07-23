@@ -124,7 +124,9 @@ impl CalendarFeed {
     /// failure the stale candidates are kept; the expiry is bumped either
     /// way, so a persistent outage surfaces one error per TTL rather than one
     /// per tick. Read the resulting state with [`Self::cal`].
-    pub fn fetch(&mut self, now: DateTime<Utc>) -> Option<CalendarError> {
+    ///
+    /// Returns `true` if there was a fetch error.
+    pub fn fetch(&mut self, now: DateTime<Utc>) -> bool {
         let fetch_start = Instant::now();
         let should_fetch = fetch_start + EXPIRY_SLACK >= self.expires;
         if should_fetch {
@@ -138,13 +140,19 @@ impl CalendarFeed {
                 .next_call
                 .as_ref()
                 .is_some_and(|e| e.start_time.signed_duration_since(now) < TimeDelta::minutes(NEXT_MAX_AGE_MINUTES));
-            self.expires = Instant::now() + if near_event { NEAR_EVENT_TTL } else { IDLE_TTL };
-            if fetch_error.is_none() {
-                info!("fetched calendar in {:.2}s, {cal}", fetch_start.elapsed().as_secs_f64());
+            self.expires = fetch_start + if near_event { NEAR_EVENT_TTL } else { IDLE_TTL };
+            if let Some(err) = &fetch_error {
+                warn!("{}: {}", err.subtitle(), err);
+            } else {
+                info!(
+                    "fetched calendar in {:.2}s, {}",
+                    fetch_start.elapsed().as_secs_f64(),
+                    cal
+                );
             }
-            fetch_error
+            fetch_error.is_some()
         } else {
-            None
+            false
         }
     }
 
