@@ -99,7 +99,7 @@ fn say_eleven_labs(text: &str, api_key: &str) -> AnyhowResult<()> {
 /// Built-in fallback via the macOS `say` command; the process is killed if the
 /// camera becomes active mid-utterance.
 fn say_builtin(text: &str) -> AnyhowResult<()> {
-    let mut child = Command::new("say").arg("-v").arg("Moira").arg(text).spawn()?;
+    let mut child = Command::new("say").arg(text).spawn()?;
     while child.try_wait()?.is_none() {
         thread::sleep(CAMERA_POLL);
         if camera::camera_active() {
