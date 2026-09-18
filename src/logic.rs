@@ -7,7 +7,7 @@ use crate::ical::{Cal, NEXT_MAX_AGE_MINUTES, NextEvent};
 use crate::{notifications, say};
 use chrono::{DateTime, TimeDelta, Timelike, Utc};
 use std::{borrow::Cow, time::Duration};
-use tracing::info;
+use tracing::{error, info};
 
 /// Idle sleep cap: how long the loop may sleep with nothing coming up.
 pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(180);
@@ -68,7 +68,9 @@ pub fn fire_alert(event: &NextEvent, minutes: i64, camera_active: bool, eleven_l
     if !camera_active {
         let summary = say::tts_friendly(sayevent_summary(event));
         let message = format!(r#"Your call "{summary}" {started_description}"#);
-        let _ = say::say(&message, eleven_labs_key);
+        if let Err(err) = say::say(&message, eleven_labs_key) {
+            error!("speech failed: {err:#}");
+        }
     }
 }
 

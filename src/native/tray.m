@@ -19,6 +19,11 @@ static NSString *gLogPath = nil;
 static _Atomic int64_t gDismissTarget = 0;
 static _Atomic int64_t gDismissedTs = 0;
 
+// Rust's audio self-test, registered via tray_set_check_audio; NULL until
+// then, when the "Check audio" item is disabled. Speech blocks for seconds,
+// so checkAudio: runs it on a background queue, never the main thread.
+static void (*gCheckAudio)(void) = NULL;
+
 // Created once in tray_run on the main thread; live for the process lifetime.
 static NSStatusItem *gStatusItem = nil;
 // The "Dismiss" / "Revert dismiss" menu item; its title tracks gDismissedTs.
@@ -90,6 +95,19 @@ static void render(void) {
   }
 }
 
+// Speaks a test phrase through the same path alerts use, so the user can
+// confirm audio works (right device, not muted) without waiting for a call.
+- (void)checkAudio:(id)sender {
+  void (*callback)(void) = gCheckAudio;
+  if (callback == NULL) {
+    return;
+  }
+  dispatch_async(
+      dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        callback();
+      });
+}
+
 // Toggles the dismissed state for the armed call and re-renders immediately
 // (no waiting on the Rust loop, which may be mid-sleep for minutes). Rust
 // picks the new state up on its next tick, always before any alert fires.
@@ -102,10 +120,14 @@ static void render(void) {
   render();
 }
 
-// Greys out "Dismiss" when there is no upcoming call to act on (target 0).
+// Greys out "Dismiss" when there is no upcoming call to act on (target 0),
+// and "Check audio" until Rust has registered its callback.
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
   if (item.action == @selector(dismissCall:)) {
     return atomic_load(&gDismissTarget) != 0;
+  }
+  if (item.action == @selector(checkAudio:)) {
+    return gCheckAudio != NULL;
   }
   return YES;
 }
@@ -154,6 +176,12 @@ void tray_run(void) {
                                               keyEquivalent:@""];
     viewLog.target = gMenuActions;
     [menu addItem:viewLog];
+    NSMenuItem *checkAudio =
+        [[NSMenuItem alloc] initWithTitle:@"Check audio"
+                                   action:@selector(checkAudio:)
+                            keyEquivalent:@""];
+    checkAudio.target = gMenuActions;
+    [menu addItem:checkAudio];
     NSMenuItem *github =
         [[NSMenuItem alloc] initWithTitle:@"About Nextcall"
                                    action:@selector(openGitHub:)
@@ -228,6 +256,15 @@ void tray_set_warning(bool warning) {
 // Polled from Rust each tick and matched against the current next call there
 // before suppressing alerts, so a stale value is harmless.
 int64_t tray_dismissed_ts(void) { return atomic_load(&gDismissedTs); }
+
+// Registers the function the "Check audio" menu item runs (on a background
+// queue, since it blocks while speaking). Called once from Rust at startup;
+// the item is disabled until then.
+void tray_set_check_audio(void (*callback)(void)) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    gCheckAudio = callback;
+  });
+}
 
 // Records the path opened by the "View Log" menu item. Thread-safe, same
 // main-queue rules as tray_set_title; called once from Rust at startup.

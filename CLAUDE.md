@@ -63,7 +63,7 @@ make lint
 
 ## Architecture
 
-All macOS interaction is implemented in Objective-C (`src/native/*.m`), exposed to Rust as plain C functions and compiled into the cargo build by `build.rs` via the `cc` crate. Only C types (UTF-8 strings, bools) cross the boundary — see `rust-objc.md` for the pattern. Rust modules (`notifications.rs`, `camera.rs`, `tray.rs`) are thin FFI wrappers.
+All macOS interaction is implemented in Objective-C (`src/native/*.m`), exposed to Rust as plain C functions and compiled into the cargo build by `build.rs` via the `cc` crate. Only C types (UTF-8 strings, bools, and one plain function pointer for the "Check audio" callback) cross the boundary. Rust modules (`notifications.rs`, `camera.rs`, `tray.rs`) are thin FFI wrappers.
 
 ### Main Entry Point (`src/main.rs`)
 The main thread runs the AppKit event loop (`tray::run`, never returns; the "Quit" menu item terminates the process). Before that it loads config, registers for notifications, and spawns the background loop, which is almost stateless — its only state is the `CalendarFeed` cache and the previous tick's timestamp:
@@ -105,7 +105,7 @@ Uses the CoreMediaIO hardware C API to detect if the camera is active:
 - Both paths block until playback ends, polling the camera every 500ms and cutting the announcement short as soon as it becomes active — so a long title never talks over the call the user just joined
 
 ### Tray Icon (`src/tray.rs` + `src/native/tray.m`)
-An AppKit `NSStatusItem` whose title is the countdown text — the only images are template glyphs: the stopwatch-lens logo while idle (the "..." title, loaded from `tray-icon.png` in Resources), the SF Symbol bell while dismissed, and a warning triangle while calendar fetches fail (armed via `tray_set_warning` each fetch cycle, self-clearing on recovery; fetch errors go to the log, not a notification). A single `render()` derives the display (title, bell icon, Dismiss/Revert item title) from the last title and the dismiss toggle, which the tray owns; `tray_set_dismiss_target`/`tray_dismissed_ts` are the atomics Rust arms/polls each tick. `tray_set_title`/`tray_set_status`/`tray_set_log_path` are thread-safe (dispatch to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns.
+An AppKit `NSStatusItem` whose title is the countdown text — the only images are template glyphs: the stopwatch-lens logo while idle (the "..." title, loaded from `tray-icon.png` in Resources), the SF Symbol bell while dismissed, and a warning triangle while calendar fetches fail (armed via `tray_set_warning` each fetch cycle, self-clearing on recovery; fetch errors go to the log, not a notification). A single `render()` derives the display (title, bell icon, Dismiss/Revert item title) from the last title and the dismiss toggle, which the tray owns; `tray_set_dismiss_target`/`tray_dismissed_ts` are the atomics Rust arms/polls each tick. `tray_set_title`/`tray_set_status`/`tray_set_log_path` are thread-safe (dispatch to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns. The menu's "Check audio" item is the one path from ObjC back into Rust: `tray_set_check_audio` registers a C function pointer (`main::check_audio`) that the tray runs on a background queue; it speaks a test phrase via `say::say` and logs/notifies on failure.
 
 ### Build Configuration (`build.rs`)
 Compiles `src/native/*.m` with the `cc` crate (ARC enabled) and links the required frameworks: Foundation, AppKit, UserNotifications, CoreMediaIO.

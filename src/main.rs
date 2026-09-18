@@ -9,6 +9,8 @@ mod tray;
 use anyhow::Result as AnyhowResult;
 use chrono::{DateTime, TimeDelta, Utc};
 use std::fs::OpenOptions;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use tracing::{error, info};
 use tracing_subscriber::fmt::time::ChronoLocal;
@@ -96,6 +98,11 @@ fn main() {
 
     info!("Configuration loaded: {config}");
 
+    // the menu's "Check audio" item needs the key too; the callback is a plain
+    // C fn so it reads it from a static rather than a closure
+    let _ = ELEVEN_LABS_KEY.set(config.eleven_labs_key.clone());
+    tray::set_check_audio(check_audio);
+
     // Calendar polling and alerting run off the main thread so the AppKit run
     // loop below is never blocked by network requests.
     std::thread::spawn(move || {
@@ -106,6 +113,40 @@ fn main() {
 
     // Blocks forever running the menu bar app; "Quit" terminates the process.
     tray::run()
+}
+
+/// The configured ElevenLabs key, stashed for [`check_audio`], which has no
+/// closure context because it's handed to the tray as a C function pointer.
+static ELEVEN_LABS_KEY: OnceLock<Option<String>> = OnceLock::new();
+
+/// Set while an audio check is speaking, so repeat clicks on "Check audio"
+/// don't stack overlapping announcements.
+static AUDIO_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// The menu's "Check audio" action: speaks a test phrase via the same path
+/// alerts use (ElevenLabs or `say`), logging the outcome and raising a
+/// notification on failure. Runs on a tray background queue, so blocking is
+/// fine; catches panics since unwinding across the C boundary would abort.
+extern "C" fn check_audio() {
+    if AUDIO_CHECK_RUNNING.swap(true, Ordering::SeqCst) {
+        info!("audio check already running, ignoring");
+        return;
+    }
+    let key = ELEVEN_LABS_KEY.get().and_then(Option::as_deref);
+    info!(
+        "audio check: speaking test phrase, camera active: {}",
+        camera::camera_active()
+    );
+    let result = std::panic::catch_unwind(|| say::say("This is Nextcall, audio is working", key));
+    match result {
+        Ok(Ok(())) => info!("audio check: finished"),
+        Ok(Err(err)) => {
+            error!("audio check failed: {err:#}");
+            notifications::send("Nextcall", Some("Audio check failed"), &format!("{err:#}"), None);
+        }
+        Err(_) => error!("audio check panicked"),
+    }
+    AUDIO_CHECK_RUNNING.store(false, Ordering::SeqCst);
 }
 
 /// How long before each scheduled tick the calendar is fetched, so network

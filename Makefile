@@ -18,7 +18,7 @@ install:
 
 .PHONY: dev  ## Build and run the dev app in the foreground (logs to terminal, Ctrl-C to quit)
 dev:
-	./run.sh
+	./dev.sh
 
 .PHONY: format  ## Auto-format rust and python source files
 format:

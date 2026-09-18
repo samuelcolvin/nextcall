@@ -3,8 +3,9 @@
 //!
 //! The countdown is plain text (the idle "..." renders as the logo glyph);
 //! the menu has a status line plus "Dismiss" (toggles to "Revert dismiss"),
-//! "View Log", "About nextcall" and "Quit". The tray owns the dismiss
-//! toggle; Rust polls [`dismissed_ts`] each tick.
+//! "View Log", "Check audio", "About Nextcall" and "Quit". The tray owns the
+//! dismiss toggle; Rust polls [`dismissed_ts`] each tick. "Check audio" is
+//! the one item that calls back into Rust, via [`set_check_audio`].
 
 use std::ffi::{CString, c_char};
 
@@ -13,6 +14,7 @@ unsafe extern "C" {
     fn tray_set_title(title: *const c_char);
     fn tray_set_status(status: *const c_char);
     fn tray_set_log_path(path: *const c_char);
+    fn tray_set_check_audio(callback: extern "C" fn());
     fn tray_set_dismiss_target(start_ts: i64);
     fn tray_dismissed_ts() -> i64;
     fn tray_set_warning(warning: bool);
@@ -31,6 +33,14 @@ pub fn run() -> ! {
 pub fn set_log_path(path: &str) {
     let Ok(path) = CString::new(path) else { return };
     unsafe { tray_set_log_path(path.as_ptr()) }
+}
+
+/// Registers the function the menu's "Check audio" item runs; the item is
+/// disabled until then. The tray calls it on a background queue (never the
+/// main thread), so blocking on speech is fine, but it must never panic
+/// across the FFI boundary. Call once at startup. Thread-safe.
+pub fn set_check_audio(callback: extern "C" fn()) {
+    unsafe { tray_set_check_audio(callback) }
 }
 
 /// Updates the status line at the top of the tray menu (e.g. "Next: standup
