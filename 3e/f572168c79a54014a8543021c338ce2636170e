@@ -1,0 +1,31 @@
+Makefile
+  s_d88f9749cf358b::t_82621f05e84a0d 21
+src/native/tray.m
+  s_d88f9749cf358b::t_0038fd131e481e 22-26,98-110,123-124,129-131,179-184,260-267
+CLAUDE.md
+  s_d88f9749cf358b::t_625ab3500015c9 66,108
+src/main.rs
+  s_d88f9749cf358b::t_a23184f5b0bfc1 101-105,118-135,140-149
+  s_d88f9749cf358b::t_625ab3500015c9 12-13,136-139
+src/tray.rs
+  s_d88f9749cf358b::t_0038fd131e481e 6-8,17,38-43
+src/logic.rs
+  s_d88f9749cf358b::t_a23184f5b0bfc1 10
+  s_d88f9749cf358b::t_0038fd131e481e 71-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3ef572168c79a54014a8543021c338ce2636170e",
+  "prompts": {},
+  "sessions": {
+    "s_d88f9749cf358b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "13559954-1623-4825-b678-7be43516a86b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
