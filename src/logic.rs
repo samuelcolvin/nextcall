@@ -1,5 +1,5 @@
 //! The pure per-tick decision logic: given the calendar state, the current
-//! time, the previous tick's time and camera state, [`step`] decides what the
+//! time, the previous tick's time and call activity, [`step`] decides what the
 //! tray shows, whether an alert is due, and how long to sleep. Keeping it
 //! pure (no clock, no IO) makes the whole alerting behaviour unit-testable.
 
@@ -35,23 +35,23 @@ pub fn step(
     cal: &Cal,
     now: DateTime<Utc>,
     prev_tick: DateTime<Utc>,
-    camera_active: bool,
+    in_call: bool,
     dismissed: Option<DateTime<Utc>>,
 ) -> Step {
     Step {
         title: tray_title(cal, now),
         status: status_line(cal, now),
-        alert: pending_alert(cal, now, prev_tick, camera_active, dismissed),
+        alert: pending_alert(cal, now, prev_tick, in_call, dismissed),
         sleep: sleep_duration(cal, now),
     }
 }
 
-/// Sends the notification (and camera-gated speech) for an alert produced by
+/// Sends the notification (and speech, skipped when in a call) for an alert produced by
 /// [`step`]. `minutes` is whole minutes since the event started. Not part of
 /// `step` so the decision stays pure; may block for seconds while speaking.
-pub fn fire_alert(event: &NextEvent, minutes: i64, camera_active: bool, eleven_labs_key: Option<&str>) {
+pub fn fire_alert(event: &NextEvent, minutes: i64, in_call: bool, eleven_labs_key: Option<&str>) {
     info!(
-        "alerting for {:?}, {minutes} minutes after start, camera active: {camera_active}",
+        "alerting for {:?}, {minutes} minutes after start, in call: {in_call}",
         event.summary
     );
     let started_description: Cow<'static, str> = match minutes {
@@ -65,7 +65,7 @@ pub fn fire_alert(event: &NextEvent, minutes: i64, camera_active: bool, eleven_l
         &event.summary,
         Some(&event.video_link),
     );
-    if !camera_active {
+    if !in_call {
         let summary = say::tts_friendly(sayevent_summary(event));
         let message = format!(r#"Your call "{summary}" {started_description}"#);
         if let Err(err) = say::say(&message, eleven_labs_key) {
@@ -82,7 +82,7 @@ fn pending_alert(
     cal: &Cal,
     now: DateTime<Utc>,
     prev_tick: DateTime<Utc>,
-    camera_active: bool,
+    in_call: bool,
     dismissed: Option<DateTime<Utc>>,
 ) -> Option<(NextEvent, i64)> {
     let event = cal.next_call.as_ref()?;
@@ -106,7 +106,7 @@ fn pending_alert(
         // a previous tick already covered this instant
         return None;
     }
-    if minutes >= 1 && camera_active {
+    if minutes >= 1 && in_call {
         // user is on the call: stop nagging (the start alert always notifies)
         return None;
     }
@@ -272,9 +272,13 @@ mod tests {
     }
 
     #[test]
-    fn camera_suppresses_nags_but_not_start() {
+    fn in_call_suppresses_nags_but_not_start() {
         let fired = step(&cal(0), now(), now() - secs(5), true, None);
-        assert_eq!(fired.alert.as_ref().unwrap().1, 0, "start alert fires despite camera");
+        assert_eq!(
+            fired.alert.as_ref().unwrap().1,
+            0,
+            "start alert fires despite being in a call"
+        );
         let nag = step(&cal(-2), now(), now() - secs(5), true, None);
         assert!(nag.alert.is_none(), "nag suppressed while on the call");
     }
@@ -357,7 +361,7 @@ mod tests {
             }),
         };
         assert_eq!(step(&c, now(), now(), false, None).title, "-0");
-        // camera state doesn't affect the icon (it only gates alerts/speech)
+        // call activity doesn't affect the icon (it only gates alerts/speech)
         assert_eq!(step(&cal(-2), now(), now(), true, None).title, "-2");
         assert_eq!(step(&cal(30), now(), now(), true, None).title, "30");
     }

@@ -7,6 +7,7 @@ fn main() {
     cc::Build::new()
         .file("src/native/notifications.m")
         .file("src/native/camera.m")
+        .file("src/native/microphone.m")
         .file("src/native/tray.m")
         .flag("-fobjc-arc")
         .compile("native");
@@ -14,7 +15,7 @@ fn main() {
     // rustc drives the final link, so it won't add these automatically the way
     // clang does when it links .m files itself.
     println!("cargo:rustc-link-lib=objc");
-    for framework in ["Foundation", "AppKit", "UserNotifications", "CoreMediaIO"] {
+    for framework in ["Foundation", "AppKit", "UserNotifications", "CoreMediaIO", "CoreAudio"] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
 }

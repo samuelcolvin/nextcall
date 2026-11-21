@@ -1,6 +1,6 @@
 // Camera-activity detection via the CoreMediaIO hardware C API.
 //
-// Exposed to Rust as camera_is_active() (declared in src/camera.rs). Used to
+// Exposed to Rust as camera_is_active() (declared in src/activity.rs). Used to
 // avoid interrupting an ongoing call with notifications/speech. Enumerates
 // CMIO devices directly (they are all video/camera devices) rather than going
 // through AVFoundation, whose device->CMIO bridge (connectionID) was removed

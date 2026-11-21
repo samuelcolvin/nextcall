@@ -1,4 +1,4 @@
-mod camera;
+mod activity;
 mod config;
 mod ical;
 mod logic;
@@ -133,10 +133,7 @@ extern "C" fn check_audio() {
         return;
     }
     let key = ELEVEN_LABS_KEY.get().and_then(Option::as_deref);
-    info!(
-        "audio check: speaking test phrase, camera active: {}",
-        camera::camera_active()
-    );
+    info!("audio check: speaking test phrase, in call: {}", activity::in_call());
     let result = std::panic::catch_unwind(|| say::say("This is Nextcall, audio is working", key));
     match result {
         Ok(Ok(())) => info!("audio check: finished"),
@@ -154,7 +151,7 @@ extern "C" fn check_audio() {
 const FETCH_LEAD: TimeDelta = TimeDelta::seconds(20);
 
 /// The main loop: almost stateless. Each tick asks the feed for the calendar
-/// (cached, network at most once per TTL), reads the camera and the tray's
+/// (cached, network at most once per TTL), reads call activity and the tray's
 /// dismiss toggle, lets the pure [`logic::step`] decide display/alert/sleep,
 /// applies the side effects, and sleeps. The only state: the feed's cache,
 /// the previous tick's timestamp (alerts exactly-once) and a log-only var.
@@ -178,7 +175,7 @@ fn background(config: config::Config) -> AnyhowResult<()> {
         // cache hit: re-selects the calendar window at the tick itself, so
         // next_call isn't up to a sleep-length stale
         let cal = feed.cal(now);
-        // the tray owns the dismiss toggle; read it like the camera state and
+        // the tray owns the dismiss toggle; read it like call activity and
         // match against the call that is still next - a stale value (the call
         // changed while we slept) must never mute a different call
         let dismissed = tray::dismissed_ts().and_then(|ts| {
@@ -189,15 +186,15 @@ fn background(config: config::Config) -> AnyhowResult<()> {
             info!("dismissed call: {dismissed:?}");
             prev_dismissed = dismissed;
         }
-        let camera_active = camera::camera_active();
-        let step = logic::step(&cal, now, prev_tick, camera_active, dismissed);
+        let in_call = activity::in_call();
+        let step = logic::step(&cal, now, prev_tick, in_call, dismissed);
         tray::set_status(&step.status);
         tray::set_title(&step.title);
         // arm the menu's Dismiss item with the call it would act on
         // (0 disables it: no upcoming call) and expire a stale dismissal
         tray::set_dismiss_target(cal.next_call.as_ref().map_or(0, |e| e.start_time.timestamp()));
         if let Some((event, minutes)) = step.alert {
-            logic::fire_alert(&event, minutes, camera_active, config.eleven_labs_key.as_deref());
+            logic::fire_alert(&event, minutes, in_call, config.eleven_labs_key.as_deref());
         }
 
         prev_tick = now;
