@@ -3,6 +3,7 @@ mod config;
 mod ical;
 mod logic;
 mod notifications;
+mod power;
 mod say;
 mod tray;
 
@@ -84,6 +85,7 @@ fn main() {
     info!("Nextcall starting up");
 
     notifications::startup();
+    power::start();
 
     let config = match config::get_config() {
         Ok(Some(config)) => config,

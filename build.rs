@@ -9,6 +9,7 @@ fn main() {
         .file("src/native/camera.m")
         .file("src/native/microphone.m")
         .file("src/native/tray.m")
+        .file("src/native/power.m")
         .flag("-fobjc-arc")
         .compile("native");
 

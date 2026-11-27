@@ -105,12 +105,16 @@ macOS UserNotifications framework integration in Objective-C:
 - ElevenLabs API (if `eleven_labs_key` is configured) - uses `rodio` for audio playback
 - macOS built-in `say` command with "Moira" voice as fallback
 - Both paths block until playback ends, polling `activity::in_call()` every 500ms and cutting the announcement short as soon as it becomes active — so a long title never talks over the call the user just joined
+- Speech is skipped, or cut short by the same poll, while the system is asleep (`power::asleep()`) — macOS runs the process during dark wakes (Power Nap) with the lid closed, which would otherwise announce calls to an empty room or leave playback paused to resume hours later
+
+### System Sleep (`src/power.rs` + `src/native/power.m`)
+`power::asleep()` is an atomic flag set by `NSWorkspaceWillSleepNotification` and cleared by `NSWorkspaceDidWakeNotification`. DidWake is only posted on a full user wake, so the flag stays set through dark wakes. `power::start()` registers the observers at startup; they're delivered via the main run loop (`tray::run`)
 
 ### Tray Icon (`src/tray.rs` + `src/native/tray.m`)
 An AppKit `NSStatusItem` whose title is the countdown text — the only images are template glyphs: the stopwatch-lens logo while idle (the "..." title, loaded from `tray-icon.png` in Resources), the SF Symbol bell while dismissed, and a warning triangle while calendar fetches fail (armed via `tray_set_warning` each fetch cycle, self-clearing on recovery; fetch errors go to the log, not a notification). A single `render()` derives the display (title, bell icon, Dismiss/Revert item title) from the last title and the dismiss toggle, which the tray owns; `tray_set_dismiss_target`/`tray_dismissed_ts` are the atomics Rust arms/polls each tick. `tray_set_title`/`tray_set_status`/`tray_set_log_path` are thread-safe (dispatch to the main queue); `tray_run` runs the `NSApplication` event loop on the main thread and never returns. The menu's "Check audio" item is the one path from ObjC back into Rust: `tray_set_check_audio` registers a C function pointer (`main::check_audio`) that the tray runs on a background queue; it speaks a test phrase via `say::say` and logs/notifies on failure.
 
 ### Build Configuration (`build.rs`)
-Compiles `src/native/*.m` with the `cc` crate (ARC enabled) and links the required frameworks: Foundation, AppKit, UserNotifications, CoreMediaIO, CoreAudio.
+Compiles `src/native/*.m` with the `cc` crate (ARC enabled) and links the required frameworks: Foundation, AppKit, UserNotifications, CoreMediaIO, CoreAudio. Every `.m` file must be listed explicitly in `build.rs`.
 
 ### Icons (`assets/`)
 `logo.svg` is the monotone stopwatch-lens logo (black); `logo-white.svg` is the same glyph in white, used as the README's dark-mode `<picture>` source; `appicon.svg` is the glyph in white on a dark plate. `assets/make-icons.sh` regenerates the checked-in artifacts (`AppIcon.icns`, `tray-icon.png`) with `sips` + `iconutil` — rerun it whenever the SVGs change. `build.sh` copies the artifacts into `Contents/Resources`.

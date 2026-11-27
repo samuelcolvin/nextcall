@@ -7,14 +7,21 @@ use std::process::Command;
 use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
-use tracing::error;
+use tracing::{error, info};
 
-use crate::activity;
+use crate::{activity, power};
 
 /// How often playback checks call activity so an announcement is cut short the
 /// moment the user joins the call — long titles must not talk over a live
 /// meeting. Each check enumerates devices, so don't poll much faster.
 const ACTIVITY_POLL: Duration = Duration::from_millis(500);
+
+/// Whether speech should stop (or never start): the user joined the call, or
+/// the system is asleep — playback must never run during a dark wake, nor be
+/// left paused to resume, hours stale, when the lid next opens.
+fn should_stop() -> bool {
+    activity::in_call() || power::asleep()
+}
 
 /// Rewrite rules making calendar-title shorthand pronounceable, applied in
 /// order (`w/` must precede the bare-slash rule). Spoken text only — the
@@ -55,8 +62,13 @@ pub fn tts_friendly(summary: &str) -> String {
 
 /// Speaks `text`, via ElevenLabs when a key is configured, else the macOS
 /// `say` command. Blocks until playback finishes — or is cut short because the
-/// camera or mic came on, i.e. the user joined the call mid-announcement.
+/// camera or mic came on (the user joined the call) or the system went to
+/// sleep. Does nothing while the system is asleep (e.g. a Power Nap dark wake).
 pub fn say(text: &str, eleven_labs_key: Option<&str>) -> AnyhowResult<()> {
+    if power::asleep() {
+        info!("system asleep, skipping speech");
+        return Ok(());
+    }
     if let Some(api_key) = eleven_labs_key {
         say_eleven_labs(text, api_key)
     } else {
@@ -65,7 +77,7 @@ pub fn say(text: &str, eleven_labs_key: Option<&str>) -> AnyhowResult<()> {
 }
 
 /// ElevenLabs TTS played through rodio; falls back to [`say_builtin`] if the
-/// API request fails. Playback stops early once the user is in a call.
+/// API request fails. Playback stops early once [`should_stop`] says so.
 fn say_eleven_labs(text: &str, api_key: &str) -> AnyhowResult<()> {
     // Generate MP3 using ElevenLabs API
     let audio_bytes = match eleven_labs_request(text, api_key) {
@@ -84,30 +96,31 @@ fn say_eleven_labs(text: &str, api_key: &str) -> AnyhowResult<()> {
     let cursor = Cursor::new(audio_bytes);
     let source = BufReader::new(cursor);
 
-    // Play the audio, watching call activity so joining the call cuts speech short.
+    // Play the audio, cutting it short if the user joins the call or the
+    // system sleeps (checked first too: the request can take seconds).
     let sink = rodio::play(stream_handle.mixer(), source)?;
     while !sink.empty() {
-        thread::sleep(ACTIVITY_POLL);
-        if activity::in_call() {
+        if should_stop() {
             sink.stop();
             break;
         }
+        thread::sleep(ACTIVITY_POLL);
     }
     Ok(())
 }
 
-/// Built-in fallback via the macOS `say` command; the process is killed if the
-/// user joins a call (camera or mic) mid-utterance.
+/// Built-in fallback via the macOS `say` command; the process is killed if
+/// [`should_stop`] fires mid-utterance (call joined, or system sleeping).
 fn say_builtin(text: &str) -> AnyhowResult<()> {
     let mut child = Command::new("say").arg(text).spawn()?;
     while child.try_wait()?.is_none() {
-        thread::sleep(ACTIVITY_POLL);
-        if activity::in_call() {
+        if should_stop() {
             let _ = child.kill();
             // Reap the killed process so it doesn't linger as a zombie.
             let _ = child.wait();
             break;
         }
+        thread::sleep(ACTIVITY_POLL);
     }
     Ok(())
 }
